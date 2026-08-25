@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <PackageId>SystemExplorer.CodeService</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Code intelligence service for the System Explorer Godot editor plugin.</Description>
+    <Authors>FootClanSoldier</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/FootClanSoldier/SystemExplorer.CodeService</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>godot;csharp;roslyn;code-intelligence;system-explorer</PackageTags>
+
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>system-explorer-code</ToolCommandName>
+    <PackageOutputPath>$(MSBuildProjectDirectory)/nupkg</PackageOutputPath>
+
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Update="README.md" Pack="true" PackagePath="\" />
+    <Folder Include="nupkg\" />
+  </ItemGroup>
+
+</Project>

@@ -24,6 +24,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Spikes/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="README.md" Pack="true" PackagePath="\" />
     <Folder Include="nupkg\" />
   </ItemGroup>

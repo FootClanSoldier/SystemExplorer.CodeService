@@ -36,6 +36,8 @@ internal sealed class ProbeScenarioContext
     public double? FixtureSemanticReadyMs { get; set; }
     public RoslynServerCapabilities? FixtureServerCapabilities { get; set; }
     public CompletionResponseEvidence? PrimaryCompletionEvidence { get; set; }
+    public SemanticGateDisambiguationEvidence? PrimarySemanticGateDisambiguationEvidence { get; set; }
+    public TrueEditorBufferCompletionEvidence? TrueEditorBufferEvidence { get; set; }
 
     public async Task<ProbeSession> StartSessionAsync(
         string workingDirectory,
@@ -52,6 +54,22 @@ internal sealed class ProbeScenarioContext
         return new ProbeSession(process, ProcessResults);
     }
 }
+
+internal sealed record SemanticGateDisambiguationEvidence(
+    CompletionResponseEvidence PreDefinitionNaturalCompletionEvidence,
+    bool PreDefinitionNaturalCompletionIncludesProbeInstanceProperty,
+    int DefinitionLocationCount,
+    bool DefinitionMatchedExpectedFixtureSymbol,
+    CompletionResponseEvidence PostDefinitionNaturalCompletionEvidence,
+    bool PostDefinitionNaturalCompletionIncludesProbeInstanceProperty);
+
+internal sealed record TrueEditorBufferCompletionEvidence(
+    CompletionResponseEvidence CompletionEvidence,
+    bool CompletionIncludesProbeInstanceProperty,
+    int DefinitionLocationCount,
+    bool DefinitionMatchedExpectedFixtureSymbol,
+    bool SnapshotVerified,
+    bool DiskUnchanged);
 
 internal sealed class ProbeSession : IAsyncDisposable
 {

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.Lsp;
 using SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.Process;
 using SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.Reporting;
 using SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.Workspace;
@@ -125,6 +126,32 @@ internal sealed class ProbeScenarioRunner
             scenarios.Add(await InitializationScenario.RunAutoLoadComparisonAsync(
                 context, cancellationToken).ConfigureAwait(false));
 
+            string? trueEditorSkipReason = GetTrueEditorBufferSkipReason(context);
+            if (trueEditorSkipReason is null)
+            {
+                scenarios.Add(await TrueEditorBufferCompletionDisambiguationScenario.RunAsync(
+                    context, cancellationToken).ConfigureAwait(false));
+            }
+            else
+            {
+                scenarios.Add(ProbeScenarioResult.Skipped(
+                    "TrueEditorBufferCompletionDisambiguation",
+                    trueEditorSkipReason));
+            }
+
+            string? sameDocumentSkipReason = GetSameDocumentCompletionSkipReason(context);
+            if (sameDocumentSkipReason is null)
+            {
+                scenarios.Add(await SameDocumentCompletionDisambiguationScenario.RunAsync(
+                    context, cancellationToken).ConfigureAwait(false));
+            }
+            else
+            {
+                scenarios.Add(ProbeScenarioResult.Skipped(
+                    "SameDocumentCompletionDisambiguation",
+                    sameDocumentSkipReason));
+            }
+
             int fixtureProcessCount = context.ProcessResults.Count;
             RoslynLanguageServerProcessResult[] fixtureProcesses = context.ProcessResults
                 .Take(fixtureProcessCount)
@@ -174,6 +201,75 @@ internal sealed class ProbeScenarioRunner
         {
             await RetirePrimarySessionIfAnyAsync(context).ConfigureAwait(false);
         }
+    }
+
+    private static string? GetTrueEditorBufferSkipReason(ProbeScenarioContext context)
+    {
+        if (context.FixtureSemanticRequestSucceeded)
+            return "Primary semantic gate passed; true-editor-buffer disambiguation was not required.";
+
+        CompletionResponseEvidence? markerEvidence = context.PrimaryCompletionEvidence;
+        SemanticGateDisambiguationEvidence? evidence = context.PrimarySemanticGateDisambiguationEvidence;
+        if (markerEvidence is null || evidence is null)
+            return "Primary semantic-gate disambiguation evidence was unavailable.";
+
+        if (markerEvidence.ResultKind != CompletionResponseResultKind.Null)
+            return "Primary semantic gate did not return Null; true-editor-buffer disambiguation was not the next isolated branch.";
+
+        if (evidence.PreDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
+            return "Pre-definition natural completion changed shape; true-editor-buffer disambiguation was not the next isolated branch.";
+
+        if (evidence.DefinitionLocationCount <= 0 || !evidence.DefinitionMatchedExpectedFixtureSymbol)
+        {
+            return "Primary disambiguation did not establish the definition-pass completion-null branch required for true-editor-buffer disambiguation.";
+        }
+
+        if (evidence.PostDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
+            return "Post-definition completion changed shape; true-editor-buffer disambiguation was not the next isolated branch.";
+
+        return null;
+    }
+
+    private static string? GetSameDocumentCompletionSkipReason(ProbeScenarioContext context)
+    {
+        if (context.FixtureSemanticRequestSucceeded)
+            return "Primary semantic gate passed; same-document completion disambiguation was not required.";
+
+        CompletionResponseEvidence? markerEvidence = context.PrimaryCompletionEvidence;
+        SemanticGateDisambiguationEvidence? primaryEvidence = context.PrimarySemanticGateDisambiguationEvidence;
+        if (markerEvidence is null || primaryEvidence is null)
+            return "Primary semantic-gate disambiguation evidence was unavailable.";
+
+        if (markerEvidence.ResultKind != CompletionResponseResultKind.Null
+            || primaryEvidence.PreDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null
+            || primaryEvidence.PostDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
+        {
+            return "Primary completion evidence did not establish the completion-null branch required for same-document disambiguation.";
+        }
+
+        if (primaryEvidence.DefinitionLocationCount <= 0
+            || !primaryEvidence.DefinitionMatchedExpectedFixtureSymbol)
+        {
+            return "Primary disambiguation did not establish the definition-pass completion-null branch required for same-document disambiguation.";
+        }
+
+        TrueEditorBufferCompletionEvidence? trueEditorEvidence = context.TrueEditorBufferEvidence;
+        if (trueEditorEvidence is null)
+            return "True-editor-buffer evidence was unavailable.";
+
+        if (trueEditorEvidence.CompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
+            return "True-editor completion was non-Null; same-document completion was not the next isolated branch.";
+
+        if (trueEditorEvidence.DefinitionLocationCount <= 0
+            || !trueEditorEvidence.DefinitionMatchedExpectedFixtureSymbol)
+        {
+            return "True-editor generation did not establish the definition-pass completion-null branch required for same-document disambiguation.";
+        }
+
+        if (!trueEditorEvidence.SnapshotVerified || !trueEditorEvidence.DiskUnchanged)
+            return "True-editor generation did not establish verified editor-buffer and disk-authority evidence required for same-document disambiguation.";
+
+        return null;
     }
 
     private static async Task RetirePrimarySessionIfAnyAsync(ProbeScenarioContext context)

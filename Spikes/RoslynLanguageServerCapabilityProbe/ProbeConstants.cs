@@ -3,7 +3,7 @@ namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe;
 internal static class ProbeConstants
 {
     public const int ReportSchemaVersion = 3;
-    public const string ProbeVersion = "1.2.5";
+    public const string ProbeVersion = "1.2.8";
     public const string RoslynLanguageServerVersion = "5.12.0-1.26426.8";
     public const string StreamJsonRpcVersion = "2.25.29";
 

@@ -271,37 +271,124 @@ Definition/reference/rename markers retain the existing symbol-target semantics 
 target./*PROBE_DEFINITION*/|ProbeDefinitionSymbol
 ```
 
-The source fixture is not rewritten to create these caret positions; existing member identifiers remain present. The controlled completion request still sends `TextDocumentPositionParams` without an explicit LSP completion context. In particular, this probe version does not add `contextSupport`, `CompletionContext`, `triggerKind`, or `triggerCharacter`; cursor position remains the single semantic input dimension changed by this experiment.
+The disk source fixture is not rewritten to create the marker or baseline natural caret positions; existing member identifiers remain present in those baseline requests. Completion still sends `TextDocumentPositionParams` without an explicit LSP completion context. This probe version does not add `contextSupport`, `CompletionContext`, `triggerKind`, or `triggerCharacter`, and it does not change completion normalization, client capabilities, `workspace/configuration`, or timing. The same-generation semantic disambiguation continues to isolate request order. Failure-branch diagnostics described below first open Consumer version 1 from an in-memory cross-document editor snapshot in a fresh explicit generation and, only for the exact remaining Null/definition-PASS branch, open Target version 1 from a same-document `this.|` editor snapshot in another fresh explicit generation. Both leave the disk fixture unchanged.
 
-Each completion request now records bounded response-shape evidence before item normalization. The evidence distinguishes JSON `null`, an explicit completion-item array, a `CompletionList` object with an `items` array, undefined/default response state, and unexpected object/value shapes. It records the raw response array length and optional boolean `isIncomplete`, while normalized persisted items remain capped by `MaxCompletionItems`. The full completion JSON payload and arbitrary completion-label sets are not persisted; semantic-gate details continue to keep only a deterministic, bounded `Probe*` label summary.
+Each completion request records bounded response-shape evidence before item normalization. The evidence distinguishes JSON `null`, an explicit completion-item array, a `CompletionList` object with an `items` array, undefined/default response state, and unexpected object/value shapes. It records the raw response array length and optional boolean `isIncomplete`, while normalized persisted items remain capped by `MaxCompletionItems`. The full completion JSON payload and arbitrary completion-label sets are not persisted; semantic-gate details continue to keep only a deterministic, bounded set of at most 32 ordinal-distinct/sorted `Probe*` labels.
 
 The explicit semantic gate also records `FixtureRestoreVerified` and a required `NoUnresolvedDependencyWarning` check against the existing bounded server-message capture. The auto-load comparison records `AutoLoadFixtureRestoreReused` and `AutoLoadNoUnresolvedDependencyWarning`. The known Roslyn message fragment `has unresolved dependencies` is matched case-insensitively. Existing `ServerMessagesObserved` / `AutoLoadServerMessagesObserved` failure evidence is retained so other project-load or build-host messages remain visible if completion still fails.
 
-The primary semantic gate remains the marker-based completion request and still requires the exact `ProbeInstanceProperty` label. If that primary request fails while its Roslyn generation remains alive, the probe now runs a bounded `SemanticGateDisambiguation` scenario against the **same already-open Target/Consumer documents and the same primary generation**. It does not restore again, send another `didOpen`, send `didChange`, or change semantic readiness. The diagnostic requests are:
+The primary semantic gate remains the marker-based completion request and still requires the exact `ProbeInstanceProperty` label. If that primary request fails while its Roslyn generation remains alive, the probe runs bounded `SemanticGateDisambiguation` diagnostics against the **same already-open Target/Consumer documents and the same primary generation**. The failure-only sequence is exactly:
 
 ```text
 primary marker completion:
     target.|/*PROBE_INSTANCE_COMPLETION*/ProbeInstanceProperty
 
-natural no-comment member completion:
+pre-definition natural completion:
     return target.|ProbeExtension();
 
 exact-target definition:
     ProbeDefinitionSymbol -> ProbeTarget.cs
+
+post-definition identical natural completion:
+    return target.|ProbeExtension();
 ```
 
-The natural completion position is derived from the unique existing statement `return target.ProbeExtension();`, immediately after `return target.`. No marker comment or other trivia sits between the member-access dot and that diagnostic caret, and the fixture source itself is not modified. Natural completion records the same bounded response shape and at most 32 ordinal-distinct/sorted `Probe*` labels as the primary gate. The diagnostic definition requires at least one returned location and separately reports whether one location matches `ProbeTarget.cs` at the expected `ProbeDefinitionSymbol` line. Marker-vs-natural response-shape comparison is observational evidence only.
+The natural position is calculated once from the unique existing statement `return target.ProbeExtension();`, immediately after `return target.`, and the exact same `naturalPosition` is reused before and after definition. No restore, `didOpen`, `didClose`, `didChange`, source rewrite, file write, workspace reload/open, server restart, delay, capability change, configuration change, or document-version change occurs between those natural completion requests. The diagnostic definition still requires at least one returned location and separately reports whether one location matches `ProbeTarget.cs` at the expected `ProbeDefinitionSymbol` line. Marker-vs-natural and pre-vs-post response-shape comparisons are observational checks; the natural completion shape/member checks remain truthful capability assertions. `ProcessSurvivedSemanticGateDisambiguation` is evaluated only after the post-definition completion request.
 
-Interpret the failure-only evidence as follows:
+The primary disambiguation helper returns a small bounded `SemanticGateDisambiguationEvidence` record. Only the primary explicit run stores that record in `ProbeScenarioContext`; the AutoLoad comparison invokes the same helper but discards its return value and cannot overwrite primary evidence. This evidence is used fail-closed to decide whether a later true-editor-buffer experiment is actually the next isolated branch. Scenario PASS/FAIL is not used as the admission signal.
 
-- marker fails + natural completion includes `ProbeInstanceProperty` + exact-target definition passes -> marker/trivia fixture ambiguity;
-- marker fails + natural completion fails + exact-target definition passes -> completion-specific failure;
-- marker fails + natural completion fails + exact-target definition fails -> broader workspace/document semantic-state problem;
-- natural completion returns items but omits `ProbeInstanceProperty` while definition passes -> completion content/semantic-context mismatch requiring bounded label analysis.
+The fresh `TrueEditorBufferCompletionDisambiguation` generation is admitted only when primary evidence is exactly:
 
-The auto-load comparison runs the same natural-completion and exact-target-definition diagnostics inline when its primary completion fails and that generation remains alive. Diagnostic success never promotes `FixtureSemanticRequestSucceeded`, never assigns `FixtureSemanticReadyMs`, and never replaces the primary marker gate. `SemanticGateDisambiguation` is deliberately absent from `RequiredFixtureScenarios`, so it cannot make an otherwise suitable candidate unsuitable or suitable by itself. The required classifier gates remain exactly `ExplicitSolutionOpen`, `Completion`, `DocumentSynchronization`, `Navigation`, `Diagnostics`, `Rename`, and `Recovery`.
+```text
+primary marker completion = Null
+pre-definition natural completion = Null
+definition locations > 0
+definition expectedTargetMatched = true
+post-definition natural completion = Null
+```
 
-`CompletionContext` remains intentionally unchanged in this probe version. Completion still uses `TextDocumentPositionParams`; `contextSupport`, `triggerKind`, and `triggerCharacter` are not added. The diagnostic step is intended to disambiguate the existing completion failure before another completion-input or client-capability dimension is introduced.
+If the primary semantic gate passed, primary disambiguation evidence is missing, the definition control did not establish the expected Target symbol, or post-definition completion changed shape, the scenario is explicitly skipped with a bounded reason instead of guessing from scenario status. The generation runs only after the primary generation is terminal and the AutoLoad comparison has fully retired, and it retires before fixture process/scenario snapshotting and before `RealGodotWorkspace`. No Roslyn generations overlap.
+
+The restored disk fixture remains exactly:
+
+```text
+return target.ProbeExtension();
+```
+
+The existing cold baseline logical caret remains:
+
+```text
+return target.|ProbeExtension();
+```
+
+For the new fresh explicit generation only, the probe creates a fail-closed in-memory Consumer snapshot by replacing the unique complete statement with:
+
+```text
+return target.|
+```
+
+The caret must be immediately after `.` and the next source character must be a line break or end-of-source. There is no marker comment, identifier token, or semicolon to the right of the caret. `ProbeTarget.cs` is still read from disk unchanged. Target is opened once at version 1 from disk; Consumer is opened once at version 1 from the in-memory editor snapshot. There is no `didChange`, reopen, reload, additional restore, source write, delay, completion-context change, capability change, or configuration change. The probe verifies the disk Consumer before opening the snapshot and again after semantic requests.
+
+The true-editor generation uses the existing `RoslynLspClient.CompletionAsync` unchanged, then compares its bounded response shape observationally with `PrimarySemanticGateDisambiguationEvidence.PreDefinitionNaturalCompletionEvidence`. It separately requires a non-null `Array`/`CompletionList` shape and exact `ProbeInstanceProperty`. After completion it runs the same exact-target definition control from the modified open Consumer against the unchanged Target and requires at least one location plus the expected Target line. It then verifies disk authority, process survival, protocol coverage, closes Consumer then Target when the process is live, and gracefully retires the generation. The comparison check always passes because it is evidence; the completion/member/definition/disk/process checks remain truthful assertions.
+
+After snapshot verification, completion, exact-target definition, and disk-authority verification have all produced observations, the true-editor scenario publishes only bounded scalar `TrueEditorBufferCompletionEvidence` into `ProbeScenarioContext`: completion response shape, exact `ProbeInstanceProperty` presence, definition count, expected-target match, snapshot verification, and disk unchanged state. It never persists completion items, source text, locations, or another unbounded payload. If the scenario faults before those observations are available, the evidence remains absent.
+
+If that bounded evidence establishes exact Case E2 -- primary marker `Null`, pre-definition natural `Null`, exact-target definition PASS, post-definition natural `Null`, verified cross-document true-editor snapshot, cross-document true-editor completion `Null`, exact-target true-editor definition PASS, and unchanged disk -- the runner starts one more **fresh explicit** diagnostic generation only after the true-editor generation is terminal:
+
+```text
+primary marker completion
+    ->
+same-generation:
+    natural mid-token completion
+    definition
+    post-definition completion
+    ->
+AutoLoad comparison
+    ->
+fresh true-editor cross-document generation:
+    return target.|
+    ->
+if still Null + exact definition PASS:
+    ->
+fresh same-document generation:
+    Target:
+        _ = this.|
+    expected:
+        ProbePrivateField
+```
+
+`SameDocumentCompletionDisambiguation` reuses the already-restored fixture and makes no disk source change. Its unique source anchor is the existing Target statement `_ = this./*PROBE_PRIVATE_COMPLETION*/ProbePrivateField;`. A scenario-local exact ordinal replacement removes that complete statement body only from the version-1 Target `didOpen` snapshot, yielding `_ = this.|` with newline/EOF immediately after the dot: no marker, right-hand identifier, or semicolon is present at the caret. Consumer is opened once at version 1 from exact disk text. There is no `didChange`, reopen, additional restore, source write, delay, `CompletionContext`, `contextSupport`, capability change, configuration change, or completion-normalization change.
+
+The same-document generation deliberately runs ordinary `CompletionAsync(TargetPath, position, ...)` **before** its definition control. A non-null `Array`/`CompletionList` response is necessary but not sufficient: the capability assertion requires the exact label `ProbePrivateField`. This is a strong same-document/same-type proof because the receiver is `this`, its compile-time type is the current `ProbeTarget`, the expected field is declared in the same class and source document, and private accessibility is valid from that type; cross-document member lookup is not required to discover the declaration. The scenario compares only bounded response shape against `TrueEditorBufferEvidence.CompletionEvidence`, then runs the Consumer `PROBE_DEFINITION` exact-target control against unchanged `ProbeDefinitionSymbol`, verifies Target and Consumer disk authority, checks process survival/protocol coverage, closes Consumer then Target when live, and gracefully retires the generation. The cross-vs-same response-shape comparison is observational and always PASS; response shape, exact private member, definition, disk, and process checks remain truthful assertions.
+
+This request ordering is motivated by matching Roslyn Language Server package source at Roslyn commit `3aeb96c9ecc56a5ee483558f9e648e33e7bfe756`: completion uses frozen partial semantics (`CompletionService_GetCompletions.cs` / `Document.WithFrozenPartialSemantics`), and navigation/definition can retry from frozen partial semantics against the original/full document when symbol resolution is insufficient (`AbstractNavigableItemsService.cs`). A cold frozen solution can therefore contain materially less compilation state than a later full-semantic path. Definition success does **not** prove that an earlier completion request observed equivalent semantic state. The probe does not claim to observe Roslyn's internal compilation object directly; it only records order-sensitive protocol evidence consistent with or contrary to that mechanism.
+
+Interpret the same-generation failure evidence first:
+
+- **Strong semantic-order evidence:** primary marker completion is `Null`, pre-definition natural completion is `Null`, definition matches the expected Target symbol, and post-definition natural completion returns `Array`/`CompletionList` containing exact `ProbeInstanceProperty`. This supports an order-dependent semantic/compilation-state asymmetry and skips the true-editor-buffer branch because the source/provider dimension is no longer the next isolated experiment.
+- **Simple warming hypothesis materially weakened:** primary marker completion is `Null`, pre-definition natural completion is `Null`, definition matches the expected Target symbol, and the identical post-definition natural completion remains `Null`. This exact branch admits `TrueEditorBufferCompletionDisambiguation`.
+- **Content mismatch:** post-definition completion becomes non-null but exact `ProbeInstanceProperty` is absent. Inspect the bounded `Probe*` labels and keep the expected direct-member assertion strong.
+- **Definition failure:** if the exact Target symbol does not match, do not attribute completion behavior to a comparable semantic state; the true-editor branch is skipped.
+
+Interpret the true-editor result as follows:
+
+- **Case E1 — true editor buffer succeeds.** If baseline natural completion is `Null`, true-editor completion returns `Array`/`CompletionList` containing exact `ProbeInstanceProperty`, and the true-editor definition control matches the expected Target symbol, there is strong evidence that the pre-existing right-hand identifier/source syntax materially affects Roslyn completion-provider output in this probe. The current mid-existing-token natural fixture is poor evidence for an editor invocation immediately after `.`. The next patch should make the controlled primary completion fixture/request-buffer semantics editor-realistic, for example by separating source-marker metadata from the actual request buffer. `CompletionContext` is still not the first corrective action.
+- **Case E2 — true editor buffer remains `Null`.** If baseline natural completion and true-editor completion are both `Null` while the true-editor definition control still matches the expected Target symbol, marker/trivia, the existing right-hand identifier, and simple definition warming are all materially weakened/eliminated as primary explanations. This exact bounded branch admits the fresh `SameDocumentCompletionDisambiguation` generation, which compares same-document completion versus cross-document receiver completion under the same protocol, capabilities, configuration, and timing, separating “completion provider generally produces zero items” from “cross-document receiver semantics are specifically unavailable.”
+- **Case E3 — non-null but expected member absent.** If the true-editor response is non-null with raw items but exact `ProbeInstanceProperty` is absent, inspect only the bounded `Probe*` labels and receiver/member content. Do not weaken the direct-member assertion.
+- **Case E4 — definition control fails.** If `TrueEditorBufferDefinitionSemanticProbeMatchedExpectedFixtureSymbol` is false, do not describe a changed completion result as pure source-syntax evidence. The semantic comparability of the unsaved version-1 editor-buffer generation must be investigated first.
+
+When Case E2 admits the same-document generation, interpret that result separately:
+
+- **Case F1 — same-document succeeds.** If cross-document true-editor completion is `Null`, same-document completion returns `Array`/`CompletionList` containing exact `ProbePrivateField`, and the exact-target definition still matches, this is strong evidence that the core C# completion path is operational with the current transport/request/capabilities while the failing dimension is cross-document receiver/member semantic visibility. This strengthens a cross-document semantic visibility / frozen-partial semantics explanation. The next patch should focus on how cross-document compilation/semantic state is established for completion rather than generic client-capability imitation; primary authority is still not promoted.
+- **Case F2 — same-document remains `Null`.** If both cross-document `return target.|` and same-document `this.|` completion are `Null` while exact-target definition still passes, cross-document receiver visibility is not sufficient to explain the failure. The next isolated experiment should be simpler syntactic/keyword completion that does not require member lookup, distinguishing “all completion/provider paths fail” from “member-access completion specifically fails.” Do not return directly to restore/timing or change capabilities/configuration/context at the same time.
+- **Case F3 — non-null response but private member absent.** If same-document completion returns items but exact `ProbePrivateField` is absent, the provider pipeline is at least partly active. Inspect only bounded `Probe*` labels and same-type accessibility/member recommendations; do not weaken the exact private-member assertion.
+- **Case F4 — definition comparability fails.** If `SameDocumentDefinitionSemanticProbeMatchedExpectedFixtureSymbol` is false, do not attribute a changed completion response purely to same-document versus cross-document semantics. Investigate whether the incomplete Target editor buffer made that generation's project semantics non-comparable.
+
+The auto-load comparison reuses the same shared helper when its primary marker completion fails and that generation remains alive. It therefore performs the same pre-definition natural completion -> exact-target definition -> identical post-definition natural completion sequence inline before `didClose`, using the same already-restored fixture and the same open-document versions. No separate AutoLoad implementation duplicates these requests.
+
+All three diagnostic branches are deliberately authority-separated from semantic readiness. Neither post-definition diagnostic success, `TrueEditorBufferCompletionDisambiguation` PASS, nor `SameDocumentCompletionDisambiguation` PASS can promote `FixtureSemanticRequestSucceeded`, assign `FixtureSemanticReadyMs`, enable `semanticContinuationPossible`, admit downstream required scenarios, change classifier results, make the candidate suitable, or admit real-workspace validation. `SemanticGateDisambiguation`, `TrueEditorBufferCompletionDisambiguation`, and `SameDocumentCompletionDisambiguation` remain absent from `RequiredFixtureScenarios`; the required classifier gates remain exactly `ExplicitSolutionOpen`, `Completion`, `DocumentSynchronization`, `Navigation`, `Diagnostics`, `Rename`, and `Recovery`. Same-document success is diagnostic evidence for the next controlled-fixture experiment only. `RealGodotWorkspace` therefore remains deferred while the primary controlled semantic gate fails.
+
+`CompletionContext` remains intentionally deferred. Matching Roslyn protocol conversion maps both missing completion context and public `CompletionTriggerKind.Invoked` to the internal invoke trigger for core C# completion, so explicit `CompletionContext` would not isolate the semantic-order hypothesis being tested here. `contextSupport`, richer VS Code-like completion capabilities, concrete completion configuration defaults, dynamic-registration handling, and initialization options remain unchanged.
 
 The stale-version experiment is deliberately run in its own server generation. It opens both Target and Consumer before its version experiment and completion requests, closes them in reverse-open order when the generation remains live, and remains observational only; it never replaces future CodeService-side document-version authority.
 
@@ -358,7 +445,7 @@ If no semantic document selection is supplied, the real-workspace semantic smoke
 
 ## Report
 
-A machine-readable JSON report with `schemaVersion = 3` and `probeVersion = 1.2.5` is written after a completed probe run. By default it is created under:
+A machine-readable JSON report with `schemaVersion = 3` and `probeVersion = 1.2.8` is written after a completed probe run. By default it is created under:
 
 ```text
 <system-temp>/SystemExplorer.CodeService/RoslynProbe/roslyn_probe_<timestamp>.json

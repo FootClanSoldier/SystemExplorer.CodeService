@@ -17,7 +17,9 @@ internal static class RenameScenario
             RoslynServerCapabilities capabilities = session.Client.ServerCapabilities
                 ?? throw new InvalidOperationException("Server capabilities unavailable.");
             context.FixtureServerCapabilities = capabilities;
-            string consumer = context.Fixture.ReadConsumer();
+            string consumer = context.CurrentConsumerText;
+            if (context.CurrentConsumerVersion != 1 || string.IsNullOrEmpty(consumer))
+                throw new InvalidOperationException("Primary Consumer true-editor snapshot state is unavailable.");
             LspPosition position = ProbeSourceMarker.FindUnique(consumer, "PROBE_RENAME");
 
             if (capabilities.PrepareRenameProvider)

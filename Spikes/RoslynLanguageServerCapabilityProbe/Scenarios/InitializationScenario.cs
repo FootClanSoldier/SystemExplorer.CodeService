@@ -7,6 +7,9 @@ namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.
 
 internal static class InitializationScenario
 {
+    private const string PrimaryConsumerAnchor = "return target.ProbeExtension();";
+    private const string PrimaryConsumerEditorPrefix = "return target.";
+
     public static Task<ProbeScenarioResult> RunExplicitSolutionOpenAsync(
         ProbeScenarioContext context,
         CancellationToken cancellationToken) =>
@@ -29,7 +32,7 @@ internal static class InitializationScenario
             checks.Add(new ProbeCheckResult("ServerStart", !session.Process.HasExited,
                 $"pid={session.Process.Identity.ProcessId}; generation={session.Process.Identity.ScenarioGeneration}"));
 
-            Stopwatch semanticReadyStopwatch = Stopwatch.StartNew();
+            context.PrimarySemanticReadinessStartTimestamp = Stopwatch.GetTimestamp();
             (bool readinessObserved, double elapsedMs) = await session.InitializeWorkspaceAsync(
                 context.Fixture.RootPath,
                 context.Fixture.SolutionPath,
@@ -46,7 +49,31 @@ internal static class InitializationScenario
                 elapsedMs));
 
             string target = context.Fixture.ReadTarget();
-            string consumer = context.Fixture.ReadConsumer();
+            string diskConsumer = context.Fixture.ReadConsumer();
+            PrimaryConsumerSnapshot snapshot = CreatePrimaryConsumerSnapshot(diskConsumer);
+            bool diskUnchangedBeforeOpen = string.Equals(
+                context.Fixture.ReadConsumer(),
+                diskConsumer,
+                StringComparison.Ordinal);
+            bool rightHandIdentifier = snapshot.CaretAbsoluteIndex < snapshot.Text.Length
+                && snapshot.Text[snapshot.CaretAbsoluteIndex] is not '\r' and not '\n';
+            bool semicolonAtCaret = snapshot.CaretAbsoluteIndex < snapshot.Text.Length
+                && snapshot.Text[snapshot.CaretAbsoluteIndex] == ';';
+            bool snapshotVerified = !string.Equals(snapshot.Text, diskConsumer, StringComparison.Ordinal)
+                && snapshot.CaretAbsoluteIndex > 0
+                && snapshot.Text[snapshot.CaretAbsoluteIndex - 1] == '.'
+                && !rightHandIdentifier
+                && !semicolonAtCaret
+                && diskUnchangedBeforeOpen
+                && CountOrdinalOccurrences(diskConsumer, PrimaryConsumerAnchor) == 1;
+            checks.Add(new ProbeCheckResult(
+                "PrimaryTrueEditorBufferSnapshotVerified",
+                snapshotVerified,
+                $"logicalCaret=return target.|; rightHandIdentifier={rightHandIdentifier.ToString().ToLowerInvariant()}; "
+                    + $"diskUnchanged={diskUnchangedBeforeOpen.ToString().ToLowerInvariant()}"));
+            if (!snapshotVerified)
+                throw new InvalidOperationException("Primary true-editor Consumer snapshot verification failed before didOpen.");
+
             await session.Client.DidOpenAsync(
                 context.Fixture.TargetPath,
                 target,
@@ -54,39 +81,47 @@ internal static class InitializationScenario
                 cancellationToken).ConfigureAwait(false);
             context.CurrentTargetText = target;
             context.CurrentTargetVersion = 1;
-            checks.Add(new ProbeCheckResult("TargetDocumentDidOpen", !session.Process.HasExited, "version=1"));
+            checks.Add(new ProbeCheckResult("TargetDocumentDidOpen", !session.Process.HasExited, "version=1; source=disk"));
 
             await session.Client.DidOpenAsync(
                 context.Fixture.ConsumerPath,
-                consumer,
+                snapshot.Text,
                 1,
                 cancellationToken).ConfigureAwait(false);
-            checks.Add(new ProbeCheckResult("ConsumerDocumentDidOpen", !session.Process.HasExited, "version=1"));
-
-            var position = ProbeSourceMarker.FindUniqueCompletionPosition(consumer, "PROBE_INSTANCE_COMPLETION");
-            CompletionRequestResult completion = await session.Client.CompletionAsync(
-                context.Fixture.ConsumerPath, position, cancellationToken).ConfigureAwait(false);
-            semanticReadyStopwatch.Stop();
-            bool semanticSucceeded = ScenarioExecution.ContainsLabel(completion.Items, "ProbeInstanceProperty");
-            context.FixtureSemanticRequestSucceeded = semanticSucceeded;
-            context.FixtureSemanticReadyMs = semanticSucceeded ? semanticReadyStopwatch.Elapsed.TotalMilliseconds : null;
-            context.PrimaryCompletionEvidence = completion.Evidence;
+            context.CurrentConsumerText = snapshot.Text;
+            context.CurrentConsumerVersion = 1;
+            context.CurrentConsumerCompletionPosition = snapshot.Position;
             checks.Add(new ProbeCheckResult(
-                "SemanticRequestsSucceeded",
-                semanticSucceeded,
-                ScenarioExecution.DescribeCompletionEvidence(completion),
-                completion.DurationMs));
+                "ConsumerDocumentDidOpen",
+                !session.Process.HasExited,
+                "version=1; source=in-memory-editor-snapshot; logicalCaret=return target.|"));
+
+            string diskConsumerAfterOpen = context.Fixture.ReadConsumer();
+            bool diskUnchangedAfterOpen = string.Equals(
+                diskConsumerAfterOpen,
+                diskConsumer,
+                StringComparison.Ordinal);
+            bool diskOriginalStatementPresent = CountOrdinalOccurrences(
+                diskConsumerAfterOpen,
+                PrimaryConsumerAnchor) == 1;
+            bool consumerSnapshotStayedOffDisk = diskUnchangedAfterOpen && diskOriginalStatementPresent;
+            checks.Add(new ProbeCheckResult(
+                "PrimaryConsumerSnapshotDidNotWriteToDisk",
+                consumerSnapshotStayedOffDisk,
+                $"diskUnchanged={diskUnchangedAfterOpen.ToString().ToLowerInvariant()}; "
+                    + $"originalStatementPresent={diskOriginalStatementPresent.ToString().ToLowerInvariant()}"));
+            checks.Add(new ProbeCheckResult(
+                "PrimarySemanticReadinessDeferred",
+                true,
+                "firstSemanticOwner=SemanticReadiness; logicalCaret=return target.|"));
             AddUnresolvedDependencyCheck(
                 checks,
                 "NoUnresolvedDependencyWarning",
                 session.Client.Callbacks.Messages);
-            if (!semanticSucceeded)
-            {
-                checks.Add(new ProbeCheckResult(
-                    "ServerMessagesObserved",
-                    true,
-                    DescribeServerMessages(session.Client.Callbacks.Messages)));
-            }
+            checks.Add(new ProbeCheckResult(
+                "ServerMessagesObserved",
+                true,
+                DescribeServerMessages(session.Client.Callbacks.Messages)));
             checks.Add(new ProbeCheckResult(
                 "WorkspaceConfigurationRequests",
                 true,
@@ -161,7 +196,7 @@ internal static class InitializationScenario
                 ScenarioExecution.DescribeCompletionEvidence(completion),
                 completion.DurationMs));
             checks.Add(new ProbeCheckResult(
-                "AutoLoadCompletionResponseShapeComparison",
+                "AutoLoadVsPrimaryReadinessCompletionShapeComparison",
                 true,
                 DescribeCompletionEvidenceComparison(context.PrimaryCompletionEvidence, completion.Evidence)));
             AddUnresolvedDependencyCheck(
@@ -183,6 +218,8 @@ internal static class InitializationScenario
                         checks,
                         "AutoLoad",
                         completion.Evidence,
+                        openedConsumerText: null,
+                        openedCompletionPosition: null,
                         includeProcessSurvivalCheck: false,
                         cancellationToken: cancellationToken).ConfigureAwait(false);
                 }
@@ -224,15 +261,18 @@ internal static class InitializationScenario
     }
 
     private static string DescribeCompletionEvidenceComparison(
-        CompletionResponseEvidence? explicitEvidence,
-        CompletionResponseEvidence autoLoadEvidence)
+        CompletionResponseEvidence? primaryReadinessEvidence,
+        CompletionResponseEvidence autoLoadColdEvidence)
     {
-        if (explicitEvidence is null)
-            return $"explicit=<unavailable>; autoLoad={ScenarioExecution.DescribeResponseShape(autoLoadEvidence)}; differs=<unknown>";
+        if (primaryReadinessEvidence is null)
+        {
+            return $"primaryReadiness=<unavailable>; autoLoadCold={ScenarioExecution.DescribeResponseShape(autoLoadColdEvidence)}; "
+                + "differs=<unknown>";
+        }
 
-        bool differs = explicitEvidence != autoLoadEvidence;
-        return $"explicit={ScenarioExecution.DescribeResponseShape(explicitEvidence)}; "
-            + $"autoLoad={ScenarioExecution.DescribeResponseShape(autoLoadEvidence)}; differs={differs.ToString().ToLowerInvariant()}";
+        bool differs = primaryReadinessEvidence != autoLoadColdEvidence;
+        return $"primaryReadiness={ScenarioExecution.DescribeResponseShape(primaryReadinessEvidence)}; "
+            + $"autoLoadCold={ScenarioExecution.DescribeResponseShape(autoLoadColdEvidence)}; differs={differs.ToString().ToLowerInvariant()}";
     }
 
     private static string DescribeServerMessages(IReadOnlyList<string> messages)
@@ -241,5 +281,53 @@ internal static class InitializationScenario
         string[] recent = messages.TakeLast(maxRecentMessages).ToArray();
         return $"count={messages.Count}; recent={(recent.Length == 0 ? "<none>" : string.Join(" | ", recent))}";
     }
+
+    private static PrimaryConsumerSnapshot CreatePrimaryConsumerSnapshot(string diskConsumer)
+    {
+        int statementStart = diskConsumer.IndexOf(PrimaryConsumerAnchor, StringComparison.Ordinal);
+        if (statementStart < 0)
+            throw new InvalidOperationException("Primary Consumer anchor was not found in disk source.");
+        if (diskConsumer.IndexOf(PrimaryConsumerAnchor, statementStart + 1, StringComparison.Ordinal) >= 0)
+            throw new InvalidOperationException("Primary Consumer anchor occurred more than once in disk source.");
+
+        string editorConsumer = diskConsumer[..statementStart]
+            + PrimaryConsumerEditorPrefix
+            + diskConsumer[(statementStart + PrimaryConsumerAnchor.Length)..];
+        int caretAbsoluteIndex = statementStart + PrimaryConsumerEditorPrefix.Length;
+
+        if (string.Equals(editorConsumer, diskConsumer, StringComparison.Ordinal))
+            throw new InvalidOperationException("Primary Consumer editor snapshot did not differ from disk source.");
+        if (caretAbsoluteIndex <= 0 || editorConsumer[caretAbsoluteIndex - 1] != '.')
+            throw new InvalidOperationException("Primary Consumer true-editor caret was not immediately preceded by the member-access dot.");
+        if (caretAbsoluteIndex < editorConsumer.Length
+            && editorConsumer[caretAbsoluteIndex] is not '\r' and not '\n')
+        {
+            throw new InvalidOperationException("Primary Consumer true-editor caret was not followed by a line break or end-of-source.");
+        }
+        if (caretAbsoluteIndex < editorConsumer.Length && editorConsumer[caretAbsoluteIndex] == ';')
+            throw new InvalidOperationException("Primary Consumer true-editor caret retained a semicolon.");
+
+        return new PrimaryConsumerSnapshot(
+            editorConsumer,
+            caretAbsoluteIndex,
+            ProbeSourceMarker.PositionAt(editorConsumer, caretAbsoluteIndex));
+    }
+
+    private static int CountOrdinalOccurrences(string source, string value)
+    {
+        int count = 0;
+        int searchStart = 0;
+        while (searchStart <= source.Length - value.Length)
+        {
+            int found = source.IndexOf(value, searchStart, StringComparison.Ordinal);
+            if (found < 0)
+                break;
+            count++;
+            searchStart = found + value.Length;
+        }
+        return count;
+    }
+
+    private sealed record PrimaryConsumerSnapshot(string Text, int CaretAbsoluteIndex, LspPosition Position);
 
 }

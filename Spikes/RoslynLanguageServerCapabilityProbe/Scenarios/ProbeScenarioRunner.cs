@@ -11,6 +11,7 @@ internal sealed class ProbeScenarioRunner
     private static readonly string[] RequiredFixtureScenarios =
     [
         "ExplicitSolutionOpen",
+        "SemanticReadiness",
         "Completion",
         "DocumentSynchronization",
         "Navigation",
@@ -59,11 +60,16 @@ internal sealed class ProbeScenarioRunner
                 context, cancellationToken).ConfigureAwait(false);
             scenarios.Add(explicitOpen);
 
-            if (context.FixtureSemanticRequestSucceeded)
+            ProbeScenarioResult semanticReadiness = await SemanticReadinessScenario.RunAsync(
+                context, cancellationToken).ConfigureAwait(false);
+            scenarios.Add(semanticReadiness);
+
+            if (semanticReadiness.Status == ProbeScenarioStatus.Pass
+                && context.FixtureSemanticRequestSucceeded)
             {
                 scenarios.Add(ProbeScenarioResult.Skipped(
                     "SemanticGateDisambiguation",
-                    "Primary semantic gate passed; failure disambiguation was not required."));
+                    "Primary semantic readiness was established; failure disambiguation was not required."));
             }
             else if (context.PrimarySession is not null && !context.PrimarySession.Process.HasExited)
             {
@@ -74,10 +80,11 @@ internal sealed class ProbeScenarioRunner
             {
                 scenarios.Add(ProbeScenarioResult.Skipped(
                     "SemanticGateDisambiguation",
-                    "Primary Roslyn generation was not alive for semantic-gate disambiguation."));
+                    "Primary Roslyn generation was not alive after semantic-readiness failure."));
             }
 
-            bool semanticContinuationPossible = context.PrimarySession is not null
+            bool semanticContinuationPossible = semanticReadiness.Status == ProbeScenarioStatus.Pass
+                && context.PrimarySession is not null
                 && !context.PrimarySession.Process.HasExited
                 && context.FixtureSemanticRequestSucceeded;
 
@@ -117,7 +124,7 @@ internal sealed class ProbeScenarioRunner
             }
             else
             {
-                AddSkippedAfterInitializationFailure(scenarios);
+                AddSkippedAfterSemanticReadinessFailure(scenarios);
             }
 
             // Every fixture generation is terminal before starting another comparison or real-workspace generation.
@@ -150,6 +157,19 @@ internal sealed class ProbeScenarioRunner
                 scenarios.Add(ProbeScenarioResult.Skipped(
                     "SameDocumentCompletionDisambiguation",
                     sameDocumentSkipReason));
+            }
+
+            string? diagnosticPullSkipReason = GetDiagnosticPullCompletionSkipReason(context);
+            if (diagnosticPullSkipReason is null)
+            {
+                scenarios.Add(await DiagnosticPullCompletionDisambiguationScenario.RunAsync(
+                    context, cancellationToken).ConfigureAwait(false));
+            }
+            else
+            {
+                scenarios.Add(ProbeScenarioResult.Skipped(
+                    "DiagnosticPullCompletionDisambiguation",
+                    diagnosticPullSkipReason));
             }
 
             int fixtureProcessCount = context.ProcessResults.Count;
@@ -206,18 +226,18 @@ internal sealed class ProbeScenarioRunner
     private static string? GetTrueEditorBufferSkipReason(ProbeScenarioContext context)
     {
         if (context.FixtureSemanticRequestSucceeded)
-            return "Primary semantic gate passed; true-editor-buffer disambiguation was not required.";
+            return "Fixture semantic readiness was established; further completion disambiguation was not required.";
 
-        CompletionResponseEvidence? markerEvidence = context.PrimaryCompletionEvidence;
+        CompletionResponseEvidence? primaryCompletionEvidence = context.PrimaryCompletionEvidence;
         SemanticGateDisambiguationEvidence? evidence = context.PrimarySemanticGateDisambiguationEvidence;
-        if (markerEvidence is null || evidence is null)
+        if (primaryCompletionEvidence is null || evidence is null)
             return "Primary semantic-gate disambiguation evidence was unavailable.";
 
-        if (markerEvidence.ResultKind != CompletionResponseResultKind.Null)
-            return "Primary semantic gate did not return Null; true-editor-buffer disambiguation was not the next isolated branch.";
+        if (primaryCompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
+            return "Primary readiness completion did not return Null; true-editor-buffer disambiguation was not the next isolated branch.";
 
         if (evidence.PreDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
-            return "Pre-definition natural completion changed shape; true-editor-buffer disambiguation was not the next isolated branch.";
+            return "Pre-definition primary true-editor completion changed shape; true-editor-buffer disambiguation was not the next isolated branch.";
 
         if (evidence.DefinitionLocationCount <= 0 || !evidence.DefinitionMatchedExpectedFixtureSymbol)
         {
@@ -225,7 +245,7 @@ internal sealed class ProbeScenarioRunner
         }
 
         if (evidence.PostDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
-            return "Post-definition completion changed shape; true-editor-buffer disambiguation was not the next isolated branch.";
+            return "Post-definition primary true-editor completion changed shape; true-editor-buffer disambiguation was not the next isolated branch.";
 
         return null;
     }
@@ -233,18 +253,18 @@ internal sealed class ProbeScenarioRunner
     private static string? GetSameDocumentCompletionSkipReason(ProbeScenarioContext context)
     {
         if (context.FixtureSemanticRequestSucceeded)
-            return "Primary semantic gate passed; same-document completion disambiguation was not required.";
+            return "Fixture semantic readiness was established; further completion disambiguation was not required.";
 
-        CompletionResponseEvidence? markerEvidence = context.PrimaryCompletionEvidence;
+        CompletionResponseEvidence? primaryCompletionEvidence = context.PrimaryCompletionEvidence;
         SemanticGateDisambiguationEvidence? primaryEvidence = context.PrimarySemanticGateDisambiguationEvidence;
-        if (markerEvidence is null || primaryEvidence is null)
+        if (primaryCompletionEvidence is null || primaryEvidence is null)
             return "Primary semantic-gate disambiguation evidence was unavailable.";
 
-        if (markerEvidence.ResultKind != CompletionResponseResultKind.Null
+        if (primaryCompletionEvidence.ResultKind != CompletionResponseResultKind.Null
             || primaryEvidence.PreDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null
             || primaryEvidence.PostDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
         {
-            return "Primary completion evidence did not establish the completion-null branch required for same-document disambiguation.";
+            return "Primary true-editor completion evidence did not establish the completion-null branch required for same-document disambiguation.";
         }
 
         if (primaryEvidence.DefinitionLocationCount <= 0
@@ -268,6 +288,65 @@ internal sealed class ProbeScenarioRunner
 
         if (!trueEditorEvidence.SnapshotVerified || !trueEditorEvidence.DiskUnchanged)
             return "True-editor generation did not establish verified editor-buffer and disk-authority evidence required for same-document disambiguation.";
+
+        return null;
+    }
+
+    private static string? GetDiagnosticPullCompletionSkipReason(ProbeScenarioContext context)
+    {
+        if (context.FixtureSemanticRequestSucceeded)
+            return "Fixture semantic readiness was established; further completion disambiguation was not required.";
+
+        CompletionResponseEvidence? primaryCompletionEvidence = context.PrimaryCompletionEvidence;
+        SemanticGateDisambiguationEvidence? primaryEvidence = context.PrimarySemanticGateDisambiguationEvidence;
+        if (primaryCompletionEvidence is null || primaryEvidence is null)
+            return "Primary semantic-gate disambiguation evidence was unavailable.";
+
+        if (primaryCompletionEvidence.ResultKind != CompletionResponseResultKind.Null
+            || primaryEvidence.PreDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null
+            || primaryEvidence.PostDefinitionNaturalCompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
+        {
+            return "Primary true-editor completion evidence did not establish the exact completion-null branch required for diagnostic-pull disambiguation.";
+        }
+
+        TrueEditorBufferCompletionEvidence? trueEditorEvidence = context.TrueEditorBufferEvidence;
+        if (trueEditorEvidence is null)
+            return "True-editor-buffer evidence was unavailable.";
+
+        if (trueEditorEvidence.CompletionEvidence.ResultKind != CompletionResponseResultKind.Null)
+            return "Cross-document true-editor completion was non-Null; diagnostic-pull disambiguation was not the next isolated branch.";
+
+        bool priorComparabilityEstablished = primaryEvidence.DefinitionLocationCount > 0
+            && primaryEvidence.DefinitionMatchedExpectedFixtureSymbol
+            && trueEditorEvidence.SnapshotVerified
+            && trueEditorEvidence.DefinitionLocationCount > 0
+            && trueEditorEvidence.DefinitionMatchedExpectedFixtureSymbol
+            && trueEditorEvidence.DiskUnchanged;
+        if (!priorComparabilityEstablished)
+        {
+            return "Existing diagnostic controls did not establish the definition-pass and disk-authority branch required for diagnostic-pull disambiguation.";
+        }
+
+        SameDocumentCompletionEvidence? sameDocumentEvidence = context.SameDocumentEvidence;
+        if (sameDocumentEvidence is null)
+            return "Same-document completion evidence was unavailable.";
+
+        bool sameDocumentCompletionEstablished = (sameDocumentEvidence.CompletionEvidence.ResultKind is
+            CompletionResponseResultKind.Array or CompletionResponseResultKind.CompletionList)
+            && sameDocumentEvidence.CompletionIncludesProbePrivateField;
+        if (!sameDocumentCompletionEstablished)
+        {
+            return "Same-document completion did not establish the working-member-completion control required for diagnostic-pull disambiguation.";
+        }
+
+        bool sameDocumentComparabilityEstablished = sameDocumentEvidence.SnapshotVerified
+            && sameDocumentEvidence.DefinitionLocationCount > 0
+            && sameDocumentEvidence.DefinitionMatchedExpectedFixtureSymbol
+            && sameDocumentEvidence.DiskUnchanged;
+        if (!sameDocumentComparabilityEstablished)
+        {
+            return "Existing diagnostic controls did not establish the definition-pass and disk-authority branch required for diagnostic-pull disambiguation.";
+        }
 
         return null;
     }
@@ -330,11 +409,25 @@ internal sealed class ProbeScenarioRunner
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
             .Count(line => line.Contains(token, StringComparison.OrdinalIgnoreCase)));
 
-    private static void AddSkippedAfterInitializationFailure(List<ProbeScenarioResult> scenarios)
+    private static void AddSkippedAfterSemanticReadinessFailure(List<ProbeScenarioResult> scenarios)
     {
-        foreach (string name in RequiredFixtureScenarios.Skip(1))
-            scenarios.Add(ProbeScenarioResult.Skipped(name, "Explicit initialization did not produce usable semantic state."));
-        scenarios.Add(ProbeScenarioResult.Skipped("StaleDocumentVersionObservation", "Primary semantic state was unavailable."));
+        foreach (string name in new[]
+        {
+            "Completion",
+            "DocumentSynchronization",
+            "Navigation",
+            "Diagnostics",
+            "Rename",
+            "Recovery",
+        })
+        {
+            scenarios.Add(ProbeScenarioResult.Skipped(
+                name,
+                "Fixture semantic readiness was not established in the primary Roslyn generation."));
+        }
+        scenarios.Add(ProbeScenarioResult.Skipped(
+            "StaleDocumentVersionObservation",
+            "Primary semantic readiness was unavailable."));
     }
 
     private static void AddSkippedAfterDeadProcess(List<ProbeScenarioResult> scenarios)

@@ -23,6 +23,8 @@ internal static class SemanticGateDisambiguationScenario
                 checks,
                 string.Empty,
                 context.PrimaryCompletionEvidence,
+                context.CurrentConsumerText,
+                context.CurrentConsumerCompletionPosition,
                 includeProcessSurvivalCheck: true,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         });
@@ -32,14 +34,18 @@ internal static class SemanticGateDisambiguationScenario
         ProbeSession session,
         List<ProbeCheckResult> checks,
         string checkPrefix,
-        CompletionResponseEvidence? markerEvidence,
+        CompletionResponseEvidence? baselineCompletionEvidence,
+        string? openedConsumerText,
+        LspPosition? openedCompletionPosition,
         bool includeProcessSurvivalCheck,
         CancellationToken cancellationToken)
     {
-        string consumer = context.Fixture.ReadConsumer();
-        string target = context.Fixture.ReadTarget();
+        if ((openedConsumerText is null) != (openedCompletionPosition is null))
+            throw new InvalidOperationException("Opened Consumer text and completion position must be supplied together.");
 
-        LspPosition naturalPosition = ProbeSourceMarker.FindUniquePositionWithin(
+        string consumer = openedConsumerText ?? context.Fixture.ReadConsumer();
+        string target = context.Fixture.ReadTarget();
+        LspPosition naturalPosition = openedCompletionPosition ?? ProbeSourceMarker.FindUniquePositionWithin(
             consumer,
             NaturalMemberAnchor,
             NaturalMemberCaretPrefix.Length);
@@ -64,9 +70,9 @@ internal static class SemanticGateDisambiguationScenario
             preDefinitionIncludesProbeInstanceProperty,
             naturalDetails));
         checks.Add(new ProbeCheckResult(
-            checkPrefix + "NaturalVsMarkerCompletionShapeComparison",
+            checkPrefix + "NaturalVsBaselineCompletionShapeComparison",
             true,
-            DescribeShapeComparison(markerEvidence, preDefinitionNaturalCompletion.Evidence)));
+            DescribeShapeComparison(baselineCompletionEvidence, preDefinitionNaturalCompletion.Evidence)));
 
         LspPosition definitionPosition = ProbeSourceMarker.FindUnique(consumer, "PROBE_DEFINITION");
         IReadOnlyList<LspLocationSummary> definitions = await session.Client.DefinitionAsync(
@@ -131,15 +137,15 @@ internal static class SemanticGateDisambiguationScenario
     }
 
     private static string DescribeShapeComparison(
-        CompletionResponseEvidence? markerEvidence,
+        CompletionResponseEvidence? baselineCompletionEvidence,
         CompletionResponseEvidence naturalEvidence)
     {
         string natural = ScenarioExecution.DescribeResponseShape(naturalEvidence);
-        if (markerEvidence is null)
-            return $"marker=<unavailable>; natural={natural}; differs=<unknown>";
+        if (baselineCompletionEvidence is null)
+            return $"baseline=<unavailable>; natural={natural}; differs=<unknown>";
 
-        bool differs = markerEvidence != naturalEvidence;
-        return $"marker={ScenarioExecution.DescribeResponseShape(markerEvidence)}; "
+        bool differs = baselineCompletionEvidence != naturalEvidence;
+        return $"baseline={ScenarioExecution.DescribeResponseShape(baselineCompletionEvidence)}; "
             + $"natural={natural}; differs={differs.ToString().ToLowerInvariant()}";
     }
 

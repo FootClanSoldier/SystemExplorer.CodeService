@@ -10,7 +10,9 @@ internal static class NavigationScenario
         ScenarioExecution.RunAsync("Navigation", cancellationToken, async checks =>
         {
             ProbeSession session = context.PrimarySession ?? throw new InvalidOperationException("Primary session is not initialized.");
-            string consumer = context.Fixture.ReadConsumer();
+            string consumer = context.CurrentConsumerText;
+            if (context.CurrentConsumerVersion != 1 || string.IsNullOrEmpty(consumer))
+                throw new InvalidOperationException("Primary Consumer true-editor snapshot state is unavailable.");
             string target = context.Fixture.ReadTarget();
 
             LspPosition definitionPosition = ProbeSourceMarker.FindUnique(consumer, "PROBE_DEFINITION");

@@ -8,6 +8,9 @@ namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.
 
 internal static class RecoveryScenario
 {
+    private const string DiskConsumerAnchor = "return target.ProbeExtension();";
+    private const string EditorConsumerPrefix = "return target.";
+
     public static Task<ProbeScenarioResult> RunAsync(ProbeScenarioContext context, CancellationToken cancellationToken) =>
         ScenarioExecution.RunAsync("Recovery", cancellationToken, async checks =>
         {
@@ -15,8 +18,10 @@ internal static class RecoveryScenario
             if (string.IsNullOrEmpty(context.CurrentTargetText) || context.CurrentTargetVersion < 3)
                 throw new InvalidOperationException("Document synchronization state was not established before recovery.");
 
-            string consumer = context.Fixture.ReadConsumer();
-            LspPosition completionPosition = ProbeSourceMarker.FindUniqueCompletionPosition(consumer, "PROBE_INSTANCE_COMPLETION");
+            if (context.CurrentConsumerVersion != 1 || string.IsNullOrEmpty(context.CurrentConsumerText))
+                throw new InvalidOperationException("Primary Consumer true-editor snapshot state was not established before recovery.");
+            LspPosition completionPosition = context.CurrentConsumerCompletionPosition
+                ?? throw new InvalidOperationException("Primary Consumer true-editor completion position is unavailable before recovery.");
             var (preCrashItems, _) = await oldSession.Client.CompletionAsync(
                 context.Fixture.ConsumerPath, completionPosition, cancellationToken).ConfigureAwait(false);
             checks.Add(new ProbeCheckResult(
@@ -68,22 +73,98 @@ internal static class RecoveryScenario
 
             await newSession.Client.DidOpenAsync(
                 context.Fixture.ConsumerPath,
-                consumer,
-                1,
+                context.CurrentConsumerText,
+                context.CurrentConsumerVersion,
                 cancellationToken).ConfigureAwait(false);
-            checks.Add(new ProbeCheckResult("ConsumerDocumentReplay", !newSession.Process.HasExited, "version=1"));
+            checks.Add(new ProbeCheckResult(
+                "ConsumerDocumentReplay",
+                !newSession.Process.HasExited,
+                $"version={context.CurrentConsumerVersion}; source=in-memory-editor-snapshot; logicalCaret=return target.|"));
             checks.Add(new ProbeCheckResult("OpenDocumentReplay", !newSession.Process.HasExited,
-                $"targetVersion={context.CurrentTargetVersion}; consumerVersion=1"));
+                $"targetVersion={context.CurrentTargetVersion}; consumerVersion={context.CurrentConsumerVersion}"));
 
-            var (postRestartItems, restartCompletionMs) = await newSession.Client.CompletionAsync(
-                context.Fixture.ConsumerPath, completionPosition, cancellationToken).ConfigureAwait(false);
-            bool replayObserved = ScenarioExecution.ContainsLabel(postRestartItems, "ProbeIncrementalMember")
-                && !ScenarioExecution.ContainsLabel(postRestartItems, "ProbeDiskMember");
-            checks.Add(new ProbeCheckResult("PostRestartSemanticQuery", replayObserved, null, restartCompletionMs));
-            checks.Add(new ProbeCheckResult("CompletionAfterRoslynRestartLatency", true, null, restartCompletionMs));
+            SemanticReadinessAttempt readiness = await SemanticReadinessOperation.ExecuteDiagnosticReadinessAsync(
+                newSession,
+                context.Fixture.ConsumerPath,
+                completionPosition,
+                cancellationToken).ConfigureAwait(false);
+            checks.Add(new ProbeCheckResult(
+                "RecoverySemanticReadinessDiagnosticCapabilityObserved",
+                readiness.DiagnosticAvailable,
+                SemanticReadinessOperation.DescribeCapability(readiness)));
+
+            if (readiness.DiagnosticAvailable)
+            {
+                checks.Add(new ProbeCheckResult(
+                    "RecoverySemanticReadinessDiagnosticPullCompleted",
+                    true,
+                    SemanticReadinessOperation.DescribeDiagnostics(readiness),
+                    readiness.DiagnosticDurationMs));
+
+                CompletionRequestResult postRestartCompletion = readiness.Completion
+                    ?? throw new InvalidOperationException("Recovery diagnostic readiness completed without a completion result.");
+                bool nonNullShape = postRestartCompletion.Evidence.ResultKind is
+                    CompletionResponseResultKind.Array or CompletionResponseResultKind.CompletionList;
+                checks.Add(new ProbeCheckResult(
+                    "RecoverySemanticReadinessCompletionReturnedNonNullShape",
+                    nonNullShape,
+                    ScenarioExecution.DescribeCompletionEvidence(postRestartCompletion),
+                    postRestartCompletion.DurationMs));
+
+                bool hasIncrementalMember = ScenarioExecution.ContainsLabel(
+                    postRestartCompletion.Items,
+                    "ProbeIncrementalMember");
+                bool hasDiskMember = ScenarioExecution.ContainsLabel(
+                    postRestartCompletion.Items,
+                    "ProbeDiskMember");
+                bool replayObserved = hasIncrementalMember && !hasDiskMember;
+                checks.Add(new ProbeCheckResult(
+                    "PostRestartSemanticQuery",
+                    replayObserved,
+                    $"ProbeIncrementalMember={hasIncrementalMember.ToString().ToLowerInvariant()}; "
+                        + $"ProbeDiskMember={hasDiskMember.ToString().ToLowerInvariant()}",
+                    postRestartCompletion.DurationMs));
+                checks.Add(new ProbeCheckResult(
+                    "CompletionAfterRoslynRestartLatency",
+                    true,
+                    null,
+                    postRestartCompletion.DurationMs));
+            }
+            else
+            {
+                checks.Add(new ProbeCheckResult(
+                    "RecoverySemanticReadinessCompletionReturnedNonNullShape",
+                    false,
+                    "Not attempted: diagnostic capability was unavailable."));
+                checks.Add(new ProbeCheckResult(
+                    "PostRestartSemanticQuery",
+                    false,
+                    "Not attempted: diagnostic semantic readiness was unavailable."));
+                checks.Add(new ProbeCheckResult(
+                    "CompletionAfterRoslynRestartLatency",
+                    false,
+                    "Not attempted: diagnostic semantic readiness was unavailable."));
+            }
+
             checks.Add(new ProbeCheckResult("ReplayedUnsavedStateRemainedOffDisk",
                 context.Fixture.ReadTarget().Contains("ProbeDiskMember", StringComparison.Ordinal)
                     && !context.Fixture.ReadTarget().Contains("ProbeIncrementalMember", StringComparison.Ordinal)));
+
+            string diskConsumerAfterReplay = context.Fixture.ReadConsumer();
+            string expectedDiskConsumer = ReconstructDiskConsumer(context.CurrentConsumerText);
+            bool originalStatementPresent = CountOrdinalOccurrences(diskConsumerAfterReplay, DiskConsumerAnchor) == 1;
+            bool matchesEditorSnapshot = string.Equals(
+                diskConsumerAfterReplay,
+                context.CurrentConsumerText,
+                StringComparison.Ordinal);
+            bool replayedConsumerStayedOffDisk = originalStatementPresent
+                && !matchesEditorSnapshot
+                && string.Equals(diskConsumerAfterReplay, expectedDiskConsumer, StringComparison.Ordinal);
+            checks.Add(new ProbeCheckResult(
+                "ReplayedConsumerSnapshotRemainedOffDisk",
+                replayedConsumerStayedOffDisk,
+                $"originalStatementPresent={originalStatementPresent.ToString().ToLowerInvariant()}; "
+                    + $"matchesEditorSnapshot={matchesEditorSnapshot.ToString().ToLowerInvariant()}"));
 
             if (!newSession.Process.HasExited)
             {
@@ -93,4 +174,48 @@ internal static class RecoveryScenario
             ScenarioExecution.AddProtocolCoverageObservation(checks, newSession);
             await newSession.GracefulRetireAsync().ConfigureAwait(false);
         });
+
+    private static string ReconstructDiskConsumer(string editorConsumer)
+    {
+        int statementStart = -1;
+        int searchStart = 0;
+        while (searchStart <= editorConsumer.Length - EditorConsumerPrefix.Length)
+        {
+            int candidate = editorConsumer.IndexOf(EditorConsumerPrefix, searchStart, StringComparison.Ordinal);
+            if (candidate < 0)
+                break;
+
+            int afterPrefix = candidate + EditorConsumerPrefix.Length;
+            if (afterPrefix == editorConsumer.Length || editorConsumer[afterPrefix] is '\r' or '\n')
+            {
+                if (statementStart >= 0)
+                    throw new InvalidOperationException("Replayed Consumer true-editor statement occurred more than once.");
+                statementStart = candidate;
+            }
+
+            searchStart = candidate + EditorConsumerPrefix.Length;
+        }
+
+        if (statementStart < 0)
+            throw new InvalidOperationException("Replayed Consumer true-editor statement was unavailable.");
+
+        return editorConsumer[..statementStart]
+            + DiskConsumerAnchor
+            + editorConsumer[(statementStart + EditorConsumerPrefix.Length)..];
+    }
+
+    private static int CountOrdinalOccurrences(string source, string value)
+    {
+        int count = 0;
+        int searchStart = 0;
+        while (searchStart <= source.Length - value.Length)
+        {
+            int found = source.IndexOf(value, searchStart, StringComparison.Ordinal);
+            if (found < 0)
+                break;
+            count++;
+            searchStart = found + value.Length;
+        }
+        return count;
+    }
 }

@@ -31,13 +31,18 @@ internal sealed class ProbeScenarioContext
     public ProbeSession? PrimarySession { get; set; }
     public string CurrentTargetText { get; set; } = string.Empty;
     public int CurrentTargetVersion { get; set; }
+    public string CurrentConsumerText { get; set; } = string.Empty;
+    public int CurrentConsumerVersion { get; set; }
+    public LspPosition? CurrentConsumerCompletionPosition { get; set; }
     public bool FixtureSemanticRequestSucceeded { get; set; }
     public bool FixtureProjectInitializationObserved { get; set; }
+    public long PrimarySemanticReadinessStartTimestamp { get; set; }
     public double? FixtureSemanticReadyMs { get; set; }
     public RoslynServerCapabilities? FixtureServerCapabilities { get; set; }
     public CompletionResponseEvidence? PrimaryCompletionEvidence { get; set; }
     public SemanticGateDisambiguationEvidence? PrimarySemanticGateDisambiguationEvidence { get; set; }
     public TrueEditorBufferCompletionEvidence? TrueEditorBufferEvidence { get; set; }
+    public SameDocumentCompletionEvidence? SameDocumentEvidence { get; set; }
 
     public async Task<ProbeSession> StartSessionAsync(
         string workingDirectory,
@@ -66,6 +71,14 @@ internal sealed record SemanticGateDisambiguationEvidence(
 internal sealed record TrueEditorBufferCompletionEvidence(
     CompletionResponseEvidence CompletionEvidence,
     bool CompletionIncludesProbeInstanceProperty,
+    int DefinitionLocationCount,
+    bool DefinitionMatchedExpectedFixtureSymbol,
+    bool SnapshotVerified,
+    bool DiskUnchanged);
+
+internal sealed record SameDocumentCompletionEvidence(
+    CompletionResponseEvidence CompletionEvidence,
+    bool CompletionIncludesProbePrivateField,
     int DefinitionLocationCount,
     bool DefinitionMatchedExpectedFixtureSymbol,
     bool SnapshotVerified,

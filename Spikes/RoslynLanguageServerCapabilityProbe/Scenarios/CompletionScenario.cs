@@ -10,10 +10,13 @@ internal static class CompletionScenario
         ScenarioExecution.RunAsync("Completion", cancellationToken, async checks =>
         {
             ProbeSession session = context.PrimarySession ?? throw new InvalidOperationException("Primary session is not initialized.");
-            string consumer = context.Fixture.ReadConsumer();
+            string consumer = context.CurrentConsumerText;
             string target = context.Fixture.ReadTarget();
+            if (context.CurrentConsumerVersion != 1 || string.IsNullOrEmpty(consumer))
+                throw new InvalidOperationException("Primary Consumer true-editor snapshot state is unavailable.");
 
-            var instancePosition = ProbeSourceMarker.FindUniqueCompletionPosition(consumer, "PROBE_INSTANCE_COMPLETION");
+            LspPosition instancePosition = context.CurrentConsumerCompletionPosition
+                ?? throw new InvalidOperationException("Primary Consumer true-editor completion position is unavailable.");
             var (instanceItems, firstMs) = await session.Client.CompletionAsync(
                 context.Fixture.ConsumerPath, instancePosition, cancellationToken).ConfigureAwait(false);
             var (_, warmMs) = await session.Client.CompletionAsync(

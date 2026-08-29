@@ -141,12 +141,21 @@ internal static class SameDocumentCompletionDisambiguationScenario
             bool targetDiskUnchanged = string.Equals(targetAfter, diskTarget, StringComparison.Ordinal);
             bool consumerDiskUnchanged = string.Equals(consumerAfter, diskConsumer, StringComparison.Ordinal);
             bool originalTargetStatementPresent = CountOrdinalOccurrences(targetAfter, SameDocumentAnchor) == 1;
+            bool diskUnchanged = targetDiskUnchanged && consumerDiskUnchanged && originalTargetStatementPresent;
             checks.Add(new ProbeCheckResult(
                 "SameDocumentDidOpenSnapshotsDidNotWriteToDisk",
-                targetDiskUnchanged && consumerDiskUnchanged && originalTargetStatementPresent,
+                diskUnchanged,
                 $"targetDiskUnchanged={targetDiskUnchanged.ToString().ToLowerInvariant()}; "
                     + $"consumerDiskUnchanged={consumerDiskUnchanged.ToString().ToLowerInvariant()}; "
                     + $"originalTargetStatementPresent={originalTargetStatementPresent.ToString().ToLowerInvariant()}"));
+
+            context.SameDocumentEvidence = new SameDocumentCompletionEvidence(
+                sameDocumentCompletion.Evidence,
+                includesProbePrivateField,
+                definitions.Count,
+                definitionMatch,
+                snapshotVerified,
+                diskUnchanged);
 
             checks.Add(new ProbeCheckResult(
                 "ProcessSurvivedSameDocumentCompletionDisambiguation",

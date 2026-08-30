@@ -44,14 +44,22 @@ internal sealed class ProbeScenarioContext
     public TrueEditorBufferCompletionEvidence? TrueEditorBufferEvidence { get; set; }
     public SameDocumentCompletionEvidence? SameDocumentEvidence { get; set; }
 
+    public Task<ProbeSession> StartSessionAsync(
+        string workingDirectory,
+        bool autoLoadProjects,
+        CancellationToken cancellationToken)
+        => StartSessionAsync(LaunchSpec, workingDirectory, autoLoadProjects, cancellationToken);
+
     public async Task<ProbeSession> StartSessionAsync(
+        RoslynLanguageServerLaunchSpec customLaunchSpec,
         string workingDirectory,
         bool autoLoadProjects,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(customLaunchSpec);
         long generation = Interlocked.Increment(ref _generation);
         RoslynLanguageServerProcess process = await RoslynLanguageServerProcess.StartAsync(
-            LaunchSpec,
+            customLaunchSpec,
             workingDirectory,
             generation,
             autoLoadProjects,

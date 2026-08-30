@@ -81,7 +81,7 @@ internal static class Program
     {
         Console.WriteLine(
             "Usage: RoslynLanguageServerCapabilityProbe --server <absolute-path> " +
-            "[--solution <.sln|.slnx> | --project <.csproj>] " +
+            "[--state-trace-server <absolute-path> --state-trace-provenance <absolute-path>] [--solution <.sln|.slnx> | --project <.csproj>] " +
             "[--document <.cs> [--completion-line <n> --completion-character <n>] " +
             "[--definition-line <n> --definition-character <n> --expected-definition <.cs>]] " +
             "[--report <path>] [--keep-artifacts] [--no-auto-load-comparison] [--stale-version-experiment]");

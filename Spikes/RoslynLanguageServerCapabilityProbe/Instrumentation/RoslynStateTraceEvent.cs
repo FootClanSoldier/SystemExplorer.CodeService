@@ -1,0 +1,27 @@
+namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.Instrumentation;
+
+internal sealed record RoslynStateTraceEvent(
+    long Seq,
+    string Event,
+    int? Pid = null,
+    int? ManagedThreadId = null,
+    int? Version = null,
+    int? Document = null,
+    int? Solution = null,
+    int? WorkspaceSolution = null,
+    int? SelectedSolution = null,
+    string? SolutionStateContentVersion = null,
+    int? Project = null,
+    int? Tracker = null,
+    string? TrackerState = null,
+    int? PendingCount = null,
+    int? Compilation = null,
+    bool? TryGetCompilation = null,
+    string? TargetHash = null,
+    string? TrackedTargetHash = null,
+    string? OldTargetHash = null,
+    string? PreviousNewTargetHash = null,
+    string? NewTargetHash = null,
+    string? ReturnPath = null,
+    string? ForkKind = null,
+    string? FirstActionKind = null);

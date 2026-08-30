@@ -2,6 +2,8 @@ namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe;
 
 internal sealed record ProbeOptions(
     string ServerCommandPath,
+    string? StateTraceServerPath,
+    string? StateTraceProvenancePath,
     string? SolutionPath,
     string? ProjectPath,
     string? DocumentPath,
@@ -18,10 +20,13 @@ internal sealed record ProbeOptions(
     public bool CompletionSmokeSelected => CompletionLine is not null && CompletionCharacter is not null;
     public bool DefinitionSmokeSelected => DefinitionLine is not null && DefinitionCharacter is not null && ExpectedDefinitionPath is not null;
     public bool FullRealSemanticValidationSelected => CompletionSmokeSelected && DefinitionSmokeSelected;
+    public bool StateTraceSelected => StateTraceServerPath is not null && StateTraceProvenancePath is not null;
 
     public static ProbeOptionsParseResult TryParse(string[] args)
     {
         string? server = null;
+        string? stateTraceServer = null;
+        string? stateTraceProvenance = null;
         string? solution = null;
         string? project = null;
         string? document = null;
@@ -43,6 +48,14 @@ internal sealed record ProbeOptions(
                 case "--server":
                     if (!TryTakeValue(args, ref i, out server))
                         return ProbeOptionsParseResult.Failure("--server requires a value.");
+                    break;
+                case "--state-trace-server":
+                    if (!TryTakeValue(args, ref i, out stateTraceServer))
+                        return ProbeOptionsParseResult.Failure("--state-trace-server requires a value.");
+                    break;
+                case "--state-trace-provenance":
+                    if (!TryTakeValue(args, ref i, out stateTraceProvenance))
+                        return ProbeOptionsParseResult.Failure("--state-trace-provenance requires a value.");
                     break;
                 case "--solution":
                     if (!TryTakeValue(args, ref i, out solution))
@@ -100,6 +113,18 @@ internal sealed record ProbeOptions(
         if (server is null)
             return ProbeOptionsParseResult.Failure("--server <absolute-path> is required.");
 
+        bool anyStateTraceOption = stateTraceServer is not null || stateTraceProvenance is not null;
+        if (anyStateTraceOption && (stateTraceServer is null || stateTraceProvenance is null))
+        {
+            return ProbeOptionsParseResult.Failure(
+                "--state-trace-server and --state-trace-provenance must be supplied together.");
+        }
+
+        if (stateTraceServer is not null && !Path.IsPathFullyQualified(stateTraceServer))
+            return ProbeOptionsParseResult.Failure("--state-trace-server must be an absolute path.");
+        if (stateTraceProvenance is not null && !Path.IsPathFullyQualified(stateTraceProvenance))
+            return ProbeOptionsParseResult.Failure("--state-trace-provenance must be an absolute path.");
+
         if (solution is not null && project is not null)
             return ProbeOptionsParseResult.Failure("Specify either --solution or --project, not both.");
 
@@ -135,12 +160,18 @@ internal sealed record ProbeOptions(
         if (document is not null && solution is null && project is null)
             return ProbeOptionsParseResult.Failure("--document requires --solution or --project.");
 
+        if (stateTraceServer is not null) stateTraceServer = Path.GetFullPath(stateTraceServer);
+        if (stateTraceProvenance is not null) stateTraceProvenance = Path.GetFullPath(stateTraceProvenance);
         if (solution is not null) solution = Path.GetFullPath(solution);
         if (project is not null) project = Path.GetFullPath(project);
         if (document is not null) document = Path.GetFullPath(document);
         if (expectedDefinition is not null) expectedDefinition = Path.GetFullPath(expectedDefinition);
         if (report is not null) report = Path.GetFullPath(report);
 
+        if (stateTraceServer is not null && !File.Exists(stateTraceServer))
+            return ProbeOptionsParseResult.Failure($"State trace server does not exist: {stateTraceServer}");
+        if (stateTraceProvenance is not null && !File.Exists(stateTraceProvenance))
+            return ProbeOptionsParseResult.Failure($"State trace provenance does not exist: {stateTraceProvenance}");
         if (solution is not null && !File.Exists(solution))
             return ProbeOptionsParseResult.Failure($"Solution does not exist: {solution}");
         if (solution is not null && !IsExtension(solution, ".sln", ".slnx"))
@@ -160,6 +191,8 @@ internal sealed record ProbeOptions(
 
         return ProbeOptionsParseResult.Success(new ProbeOptions(
             server,
+            stateTraceServer,
+            stateTraceProvenance,
             solution,
             project,
             document,

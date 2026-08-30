@@ -3,9 +3,13 @@ namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe;
 internal static class ProbeConstants
 {
     public const int ReportSchemaVersion = 3;
-    public const string ProbeVersion = "1.3.3";
+    public const string ProbeVersion = "1.3.4";
     public const string RoslynLanguageServerVersion = "5.12.0-1.26426.8";
     public const string StreamJsonRpcVersion = "2.25.29";
+    public const string RoslynSourceCommit = "3aeb96c9ecc56a5ee483558f9e648e33e7bfe756";
+    public const int RoslynStateTraceVersion = 1;
+    public const string RoslynStateTracePrefix = "SETRACE|";
+    public const int MaxRoslynStateTraceEvents = 256;
 
     public const int MaxToolInventoryOutputBytes = 64 * 1024;
     public const int MaxFixtureRestoreOutputBytes = 256 * 1024;

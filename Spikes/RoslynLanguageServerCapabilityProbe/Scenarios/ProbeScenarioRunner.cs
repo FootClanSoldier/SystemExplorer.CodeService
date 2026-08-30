@@ -191,6 +191,12 @@ internal sealed class ProbeScenarioRunner
                 CountStderr(fixtureProcesses, "error"),
                 _options.KeepArtifacts ? "Temporary fixture retained by --keep-artifacts." : "Temporary fixture scheduled for cleanup after probe completion.");
 
+            // The official fixture authority snapshot above is frozen before any instrumented process exists.
+            // This diagnostic-only scenario may add a custom process to the final report, but cannot influence
+            // fixture process survival/stderr metrics or classifier authority.
+            scenarios.Add(await RoslynStateLineageTraceScenario.RunAsync(
+                context, cancellationToken).ConfigureAwait(false));
+
             (ProbeScenarioResult realResult, ProbeWorkspaceReport workspace) = await RealWorkspaceScenario.RunAsync(
                 context, cancellationToken).ConfigureAwait(false);
             scenarios.Add(realResult);

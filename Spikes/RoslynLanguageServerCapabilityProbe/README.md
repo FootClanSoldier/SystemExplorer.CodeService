@@ -16,6 +16,8 @@ The probe is designed for exactly:
 - `roslyn-language-server` **5.12.0-1.26426.8**
 - `StreamJsonRpc` **2.25.29**
 - target framework `net10.0`
+- probe version **1.3.4** / report schema **3**
+- optional Roslyn state-lineage instrumentation base: `dotnet/roslyn` commit `3aeb96c9ecc56a5ee483558f9e648e33e7bfe756`
 
 Do not replace the Roslyn tool version with `latest`, a wildcard, or another prerelease version when collecting evidence for this spike. If the exact tool package is unavailable, stop the runtime verification rather than silently substituting a different Roslyn Language Server build.
 
@@ -683,12 +685,135 @@ The controlled mutation outcomes are interpreted as follows:
 - **Case K4 — post-diagnostic completion is non-null but stale.** Presence of `ProbeDiskMember` after full mutation, or `ProbeUnsavedMember`/`ProbeDiskMember` after incremental mutation, is stale semantic-state evidence. Do not weaken the exact current-member assertions.
 - **Case K5 — immediate completion now passes.** Record the non-reproduction and do not conclude that re-readiness is required until the immediate failure reproduces. Because re-readiness is conditional, no mutation diagnostic is run for a stage whose immediate required assertion already passes.
 
-Recovery remains functionally unchanged. If incremental re-readiness leaves the primary generation
-semantically current, the later unchanged `Recovery.PreCrashSemanticQuery` may now pass with exact
-`ProbeIncrementalMember`; that is secondary persistence evidence. If the mutation re-readiness
-check passes but the later pre-crash query fails without another Target mutation, a subsequent
-investigation should look for later request/workspace activity that invalidates readiness again.
+Recovery remains functionally unchanged.
 
+### Verified 1.3.3 result — same-generation diagnostics do not restore changed Target semantics
+
+The controlled 1.3.3 runtime result falsified Case K1 as the simple explanation. Initial semantic
+readiness returned current completion including `ProbeDiskMember`, but both mutation stages remained
+stale at the original v1 Target even after the same-generation diagnostic pull completed:
+
+```text
+initial readiness
+    -> ProbeDiskMember=true
+
+full didChange v2
+    -> immediate: ProbeUnsavedMember=false, ProbeDiskMember=true
+    -> diagnostic pull
+    -> immediate: ProbeUnsavedMember=false, ProbeDiskMember=true
+
+incremental didChange v3
+    -> immediate: ProbeIncrementalMember=false, ProbeUnsavedMember=false, ProbeDiskMember=true
+    -> diagnostic pull
+    -> immediate: ProbeIncrementalMember=false, ProbeUnsavedMember=false, ProbeDiskMember=true
+
+fresh generation + Target v3 replay + Consumer v1 replay + diagnostic readiness
+    -> ProbeIncrementalMember=true
+    -> ProbeDiskMember=false
+```
+
+Thus `mutation invalidates readiness -> diagnostic restores it` is no longer a viable simple model.
+Probe-owned unsaved Target v3 is correct; the unresolved problem is which solution/compilation
+lineage the same-generation completion actually consumes after mutation.
+
+### Source-supported mechanism — pending TouchDocuments + frozen partial semantics
+
+Exact source at Roslyn commit `3aeb96c9ecc56a5ee483558f9e648e33e7bfe756` supports this mechanism:
+
+```text
+didChange
+-> tracked SourceText/version updated + cached LSP solutions cleared
+-> workspace/LSP solution can carry pending TouchDocumentsAction
+-> completion calls WithFrozenPartialSemantics
+-> InProgress WithDoNotCreateCreationPolicy uses First().OldProjectState
+-> requested Consumer is restored into frozen solution
+-> unrelated changed Target may remain at old state
+```
+
+Consecutive `TouchDocumentsAction` changes can also merge while retaining the first action's
+`OldProjectState`, so `v1 -> v2 -> v3` may become a pending translation effectively rooted as
+`v1 -> v3`. That is source-consistent with the observed v1 `ProbeDiskMember` staleness after v3.
+It is a **source-supported mechanism**, not yet the complete runtime root cause. In particular, it
+does not answer why a completed diagnostic request fails to make the next completion reuse current
+full compilation state.
+
+### Probe 1.3.4 — optional RoslynStateLineageTrace
+
+Probe 1.3.4 leaves the official 1.3.3 fixture chain, `DocumentSynchronization`, classifier,
+completion/rename blockers, protocol payloads, timing, and official tool provenance unchanged.
+After the official fixture scenario/process snapshot is frozen and before `RealGodotWorkspace`, it
+adds one optional diagnostic-only scenario named exactly `RoslynStateLineageTrace`.
+
+Without both arguments it is skipped exactly as follows:
+
+```text
+RoslynStateLineageTrace SKIPPED
+No --state-trace-server/--state-trace-provenance supplied.
+```
+
+Trace mode must be explicitly selected with an existing absolute pair:
+
+```text
+--state-trace-server <absolute instrumented wrapper>
+--state-trace-provenance <absolute provenance.json>
+```
+
+The normal `--server` remains the official `roslyn-language-server` 5.12.0-1.26426.8 package
+authority and continues through `RoslynLanguageServerToolVerifier`. The state-trace server is a
+separate diagnostic command, receives no package-provenance claim, never becomes `PrimarySession`,
+and cannot update fixture semantic-readiness/current-document authority. Its process is included in
+the final `Processes` array but is excluded from the already-frozen official fixture process/stderr
+metrics. `RoslynStateLineageTrace` is absent from `RequiredFixtureScenarios`, so PASS/FAIL/SKIPPED
+cannot change candidate classification.
+
+The trace scenario uses only the controlled fixture and a fresh instrumented generation. Its exact
+semantic request sequence is:
+
+```text
+Target didOpen v1
+Consumer didOpen v1 at return target.|
+
+diagnostic #1
+completion #1
+
+full Target didChange v2
+completion #2
+
+diagnostic #2
+completion #3
+
+incremental Target didChange v3
+completion #4
+
+diagnostic #3
+completion #5
+```
+
+No recovery, navigation, rename, definition, delay, retry, reopen, restore, source write, real
+workspace, CompletionContext, capability imitation, or dynamic-registration fix is added. The
+scenario computes local SHA-256/UTF-8 hashes for exact Target v1/v2/v3 and compares those hashes to
+`SETRACE|` observations without persisting source text. Instrumentation perturbation is reported
+truthfully rather than compensated for with retries or sleeps.
+
+Temporary upstream tooling lives under `Instrumentation/RoslynStateTrace/`.
+`Prepare-RoslynStateTrace.ps1` requires a clean **throwaway** checkout at the exact pinned commit,
+preflights exact source anchors before any write, applies only observational calls, builds the
+repository's existing LanguageServer project, and generates a wrapper plus `provenance.json` outside
+the SystemExplorer source tree. Neither the Roslyn checkout, Roslyn build output, wrapper nor
+provenance file belongs in the SystemExplorer release. The helper is disabled unless the trace env
+vars are explicit, emits at most 256 stderr events, locks complete trace-line writes, uses monotonic
+sequence numbers and `RuntimeHelpers.GetHashCode` process-local identities, and uses only existing
+objects, `TryGetText`, already-available `SourceText`, pending tracker fields and non-creating
+`TryGetCompilation`. It must not materialize semantic state merely to trace it.
+
+The trace is intended to distinguish:
+
+- **L1:** tracked v3 + completion pre-freeze v3 + post-freeze v1 => frozen-partial rollback.
+- **L2:** tracked v3 + completion pre-freeze v1 => state is lost before frozen completion.
+- **L3:** diagnostic and next completion share one InProgress tracker => diagnostic did not finalize the assumed state.
+- **L4:** diagnostic ends Final/v3 but next completion uses a different InProgress/v1-rooted tracker => cross-request lineage recreation.
+- **L5:** completion pre/post-freeze remain v3 while items stay stale => reopen provider/result-cache investigation.
+- **L6:** instrumentation removes the stale behavior => instrumentation perturbation; reduce observation rather than add delays.
 
 `CompletionContext` remains intentionally deferred. Matching Roslyn protocol conversion maps both missing completion context and public `CompletionTriggerKind.Invoked` to the internal invoke trigger for core C# completion, so explicit `CompletionContext` would not isolate the semantic-order hypothesis being tested here. `contextSupport`, richer VS Code-like completion capabilities, concrete completion configuration defaults, dynamic-registration handling, and initialization options remain unchanged.
 

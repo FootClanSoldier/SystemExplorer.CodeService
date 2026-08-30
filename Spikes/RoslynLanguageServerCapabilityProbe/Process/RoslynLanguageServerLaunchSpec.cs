@@ -33,6 +33,31 @@ internal sealed record RoslynLanguageServerLaunchSpec(
             RoslynLanguageServerLaunchKind.DirectCommand);
     }
 
+    public static RoslynLanguageServerLaunchSpec CreateInstrumentation(string commandPath)
+    {
+        if (string.IsNullOrWhiteSpace(commandPath) || !Path.IsPathFullyQualified(commandPath))
+            throw new ProbeServerSetupException("Instrumented Roslyn server command path must be an existing absolute path.");
+
+        string normalizedPath = Path.GetFullPath(commandPath);
+        if (!File.Exists(normalizedPath))
+            throw new ProbeServerSetupException($"Instrumented Roslyn server command does not exist: {normalizedPath}");
+
+        if (OperatingSystem.IsWindows()
+            && string.Equals(Path.GetExtension(normalizedPath), ".cmd", StringComparison.OrdinalIgnoreCase))
+        {
+            string commandInterpreter = ResolveWindowsCommandInterpreter();
+            return new RoslynLanguageServerLaunchSpec(
+                normalizedPath,
+                commandInterpreter,
+                RoslynLanguageServerLaunchKind.WindowsCommandShim);
+        }
+
+        return new RoslynLanguageServerLaunchSpec(
+            normalizedPath,
+            normalizedPath,
+            RoslynLanguageServerLaunchKind.DirectCommand);
+    }
+
     public ProcessStartInfo CreateProcessStartInfo(string workingDirectory, bool autoLoadProjects)
     {
         if (!Directory.Exists(workingDirectory))

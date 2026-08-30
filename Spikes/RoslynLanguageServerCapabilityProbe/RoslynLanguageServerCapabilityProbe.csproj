@@ -7,6 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Instrumentation/RoslynStateTrace/SystemExplorerRoslynStateTrace.cs" />
+    <None Include="Instrumentation/RoslynStateTrace/SystemExplorerRoslynStateTrace.cs" />
     <PackageReference Include="StreamJsonRpc" Version="2.25.29" />
   </ItemGroup>
 </Project>

@@ -6,7 +6,11 @@ internal sealed class CodeServiceHost : IAsyncDisposable
     private readonly SessionCoordinator _sessionCoordinator;
     private readonly DiagnosticLogging _diagnosticLogging;
     private readonly WorkloadCoordinator _workloadCoordinator;
+    private readonly RoslynLanguageServerHost _roslynLanguageServerHost;
+    private readonly DocumentSynchronizationHost _documentSynchronizationHost;
     private readonly WorkspaceHost _workspaceHost;
+    private readonly DocumentSemanticReadinessHost _documentSemanticReadinessHost;
+    private readonly DocumentCompletionHost _documentCompletionHost;
     private readonly LocalTransportHost _localTransportHost;
     private readonly BootstrapReadinessWriter _bootstrapReadinessWriter;
     private readonly object _shutdownSync = new();
@@ -18,7 +22,11 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         SessionCoordinator sessionCoordinator,
         DiagnosticLogging diagnosticLogging,
         WorkloadCoordinator workloadCoordinator,
+        RoslynLanguageServerHost roslynLanguageServerHost,
+        DocumentSynchronizationHost documentSynchronizationHost,
         WorkspaceHost workspaceHost,
+        DocumentSemanticReadinessHost documentSemanticReadinessHost,
+        DocumentCompletionHost documentCompletionHost,
         LocalTransportHost localTransportHost,
         BootstrapReadinessWriter bootstrapReadinessWriter)
     {
@@ -26,7 +34,11 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         _sessionCoordinator = sessionCoordinator;
         _diagnosticLogging = diagnosticLogging;
         _workloadCoordinator = workloadCoordinator;
+        _roslynLanguageServerHost = roslynLanguageServerHost;
+        _documentSynchronizationHost = documentSynchronizationHost;
         _workspaceHost = workspaceHost;
+        _documentSemanticReadinessHost = documentSemanticReadinessHost;
+        _documentCompletionHost = documentCompletionHost;
         _localTransportHost = localTransportHost;
         _bootstrapReadinessWriter = bootstrapReadinessWriter;
     }
@@ -72,6 +84,86 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         DiagnosticLogging diagnosticLogging = loggingResult.Logging;
 
         diagnosticLogging.WriteEvent("owner_validated");
+
+        RoslynLanguageServerRuntimeResolutionResult runtimeResolution =
+            RoslynLanguageServerRuntimeResolver.Resolve(startupOptions.RoslynRuntime);
+
+        if (runtimeResolution.Status == RoslynLanguageServerRuntimeResolutionStatus.Failure)
+        {
+            if (diagnosticLogging.IsEnabled)
+            {
+                diagnosticLogging.WriteEvent(
+                    "roslyn_runtime_provisioning_fault",
+                    new
+                    {
+                        platform = RoslynLanguageServerRuntimeResolver.GetCurrentPlatformName(),
+                        processArchitecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
+                        distributionId = RoslynLanguageServerRuntime.DistributionId,
+                        reason = runtimeResolution.ErrorMessage,
+                    });
+            }
+            else
+            {
+                diagnosticLogging.WriteEvent("roslyn_runtime_provisioning_fault");
+            }
+
+            DisposeGodotLifetimeNoThrow(godotProcessLifetime, diagnosticLogging);
+
+            string? diagnosticLogPath = diagnosticLogging.LogPath;
+            diagnosticLogging.Flush();
+            diagnosticLogging.Dispose();
+
+            return CodeServiceHostCreationResult.Failure(
+                CodeServiceHostCreationFailureKind.RoslynRuntimeProvisioningFailure,
+                runtimeResolution.ErrorMessage!,
+                diagnosticLogPath,
+                loggingResult.WarningMessage);
+        }
+
+        if (runtimeResolution.Status == RoslynLanguageServerRuntimeResolutionStatus.UnsupportedPlatform)
+        {
+            if (diagnosticLogging.IsEnabled)
+            {
+                diagnosticLogging.WriteEvent(
+                    "roslyn_runtime_unsupported_platform",
+                    new
+                    {
+                        platform = RoslynLanguageServerRuntimeResolver.GetCurrentPlatformName(),
+                        processArchitecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
+                        packagedRuntimeSupport = "win-x64",
+                    });
+            }
+            else
+            {
+                diagnosticLogging.WriteEvent("roslyn_runtime_unsupported_platform");
+            }
+        }
+
+        RoslynLanguageServerRuntime? resolvedRoslynRuntime = runtimeResolution.Runtime;
+        if (resolvedRoslynRuntime is RoslynLanguageServerRuntime validatedRoslynRuntime)
+        {
+            if (diagnosticLogging.IsEnabled)
+            {
+                diagnosticLogging.WriteEvent(
+                    "roslyn_runtime_validated",
+                    new
+                    {
+                        runtimeSource = validatedRoslynRuntime.RuntimeSource.ToString(),
+                        distributionId = validatedRoslynRuntime.RuntimeDistributionId,
+                        platform = RoslynLanguageServerRuntimeResolver.GetCurrentPlatformName(),
+                        processArchitecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
+                        fixedDllSha256 = validatedRoslynRuntime.VerifiedDllSha256,
+                        upstreamCommit = validatedRoslynRuntime.VerifiedUpstreamCommit,
+                        canonicalFixPatchSha256 = validatedRoslynRuntime.VerifiedCanonicalFixPatchSha256,
+                        localFixCommit = validatedRoslynRuntime.VerifiedLocalFixCommit,
+                        provenance = "systemexplorer-private-patched-build",
+                    });
+            }
+            else
+            {
+                diagnosticLogging.WriteEvent("roslyn_runtime_validated");
+            }
+        }
 
         SessionCoordinatorCreationResult sessionResult =
             SessionCoordinator.TryCreate(startupOptions.GodotOwnerIdentity);
@@ -216,10 +308,19 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                 loggingResult.WarningMessage);
         }
 
-        WorkspaceHost workspaceHost;
+        RoslynLanguageServerHost roslynLanguageServerHost = new(
+            resolvedRoslynRuntime,
+            versionResult.ServiceVersion!,
+            diagnosticLogging);
+
+        DocumentSynchronizationHost documentSynchronizationHost;
         try
         {
-            workspaceHost = new WorkspaceHost(workloadCoordinator, diagnosticLogging);
+            documentSynchronizationHost = new DocumentSynchronizationHost(
+                workloadCoordinator,
+                roslynLanguageServerHost,
+                diagnosticLogging);
+            diagnosticLogging.WriteEvent("document_sync_host_started");
         }
         catch (Exception exception)
         {
@@ -229,6 +330,44 @@ internal sealed class CodeServiceHost : IAsyncDisposable
             BeginWorkloadShutdownNoThrow(workloadCoordinator, diagnosticLogging);
             await RetireWorkloadNoThrowAsync(workloadCoordinator, diagnosticLogging)
                 .ConfigureAwait(false);
+            await RetireRoslynNoThrowAsync(roslynLanguageServerHost, diagnosticLogging)
+                .ConfigureAwait(false);
+            RetireSessionNoThrow(sessionCoordinator, diagnosticLogging, writeLifecycleEvents: true);
+            DisposeGodotLifetimeNoThrow(godotProcessLifetime, diagnosticLogging);
+            diagnosticLogging.WriteEvent("service_stopped");
+
+            string? diagnosticLogPath = diagnosticLogging.LogPath;
+            diagnosticLogging.Flush();
+            diagnosticLogging.Dispose();
+
+            return CodeServiceHostCreationResult.Failure(
+                CodeServiceHostCreationFailureKind.SessionStartupFailure,
+                $"document synchronization host initialization failed: {ToSingleLine(exception.Message)}",
+                diagnosticLogPath,
+                loggingResult.WarningMessage);
+        }
+
+        WorkspaceHost workspaceHost;
+        try
+        {
+            workspaceHost = new WorkspaceHost(
+                workloadCoordinator,
+                roslynLanguageServerHost,
+                documentSynchronizationHost,
+                diagnosticLogging);
+        }
+        catch (Exception exception)
+        {
+            diagnosticLogging.WriteFault("service_fault", exception);
+            diagnosticLogging.WriteEvent("service_stopping");
+
+            BeginDocumentShutdownNoThrow(documentSynchronizationHost, diagnosticLogging);
+            BeginWorkloadShutdownNoThrow(workloadCoordinator, diagnosticLogging);
+            await RetireWorkloadNoThrowAsync(workloadCoordinator, diagnosticLogging)
+                .ConfigureAwait(false);
+            await RetireRoslynNoThrowAsync(roslynLanguageServerHost, diagnosticLogging)
+                .ConfigureAwait(false);
+            DisposeDocumentNoThrow(documentSynchronizationHost, diagnosticLogging);
             RetireSessionNoThrow(sessionCoordinator, diagnosticLogging, writeLifecycleEvents: true);
             DisposeGodotLifetimeNoThrow(godotProcessLifetime, diagnosticLogging);
             diagnosticLogging.WriteEvent("service_stopped");
@@ -244,20 +383,98 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                 loggingResult.WarningMessage);
         }
 
+        DocumentSemanticReadinessHost documentSemanticReadinessHost;
+        try
+        {
+            documentSemanticReadinessHost = new DocumentSemanticReadinessHost(
+                workloadCoordinator, workspaceHost, documentSynchronizationHost, roslynLanguageServerHost, diagnosticLogging);
+            diagnosticLogging.WriteEvent("semantic_readiness_host_started");
+        }
+        catch (Exception exception)
+        {
+            diagnosticLogging.WriteFault("service_fault", exception);
+            diagnosticLogging.WriteEvent("service_stopping");
+            BeginDocumentShutdownNoThrow(documentSynchronizationHost, diagnosticLogging);
+            BeginWorkspaceShutdownNoThrow(workspaceHost, diagnosticLogging);
+            BeginWorkloadShutdownNoThrow(workloadCoordinator, diagnosticLogging);
+            await RetireWorkloadNoThrowAsync(workloadCoordinator, diagnosticLogging).ConfigureAwait(false);
+            await RetireRoslynNoThrowAsync(roslynLanguageServerHost, diagnosticLogging).ConfigureAwait(false);
+            DisposeDocumentNoThrow(documentSynchronizationHost, diagnosticLogging);
+            DisposeWorkspaceNoThrow(workspaceHost, diagnosticLogging);
+            RetireSessionNoThrow(sessionCoordinator, diagnosticLogging, writeLifecycleEvents: true);
+            DisposeGodotLifetimeNoThrow(godotProcessLifetime, diagnosticLogging);
+            diagnosticLogging.WriteEvent("service_stopped");
+            string? diagnosticLogPath = diagnosticLogging.LogPath;
+            diagnosticLogging.Flush();
+            diagnosticLogging.Dispose();
+            return CodeServiceHostCreationResult.Failure(CodeServiceHostCreationFailureKind.SessionStartupFailure, $"semantic readiness host initialization failed: {ToSingleLine(exception.Message)}", diagnosticLogPath, loggingResult.WarningMessage);
+        }
+
+        DocumentCompletionHost documentCompletionHost;
+        try
+        {
+            documentCompletionHost = new DocumentCompletionHost(
+                workloadCoordinator,
+                workspaceHost,
+                documentSynchronizationHost,
+                documentSemanticReadinessHost,
+                roslynLanguageServerHost,
+                diagnosticLogging);
+            diagnosticLogging.WriteEvent("completion_host_started");
+        }
+        catch (Exception exception)
+        {
+            diagnosticLogging.WriteFault("service_fault", exception);
+            diagnosticLogging.WriteEvent("service_stopping");
+            BeginSemanticShutdownNoThrow(documentSemanticReadinessHost, diagnosticLogging);
+            BeginDocumentShutdownNoThrow(documentSynchronizationHost, diagnosticLogging);
+            BeginWorkspaceShutdownNoThrow(workspaceHost, diagnosticLogging);
+            BeginWorkloadShutdownNoThrow(workloadCoordinator, diagnosticLogging);
+            await RetireWorkloadNoThrowAsync(workloadCoordinator, diagnosticLogging).ConfigureAwait(false);
+            await RetireRoslynNoThrowAsync(roslynLanguageServerHost, diagnosticLogging).ConfigureAwait(false);
+            DisposeSemanticNoThrow(documentSemanticReadinessHost, diagnosticLogging);
+            DisposeDocumentNoThrow(documentSynchronizationHost, diagnosticLogging);
+            DisposeWorkspaceNoThrow(workspaceHost, diagnosticLogging);
+            RetireSessionNoThrow(sessionCoordinator, diagnosticLogging, writeLifecycleEvents: true);
+            DisposeGodotLifetimeNoThrow(godotProcessLifetime, diagnosticLogging);
+            diagnosticLogging.WriteEvent("service_stopped");
+            string? diagnosticLogPath = diagnosticLogging.LogPath;
+            diagnosticLogging.Flush();
+            diagnosticLogging.Dispose();
+            return CodeServiceHostCreationResult.Failure(
+                CodeServiceHostCreationFailureKind.SessionStartupFailure,
+                $"completion host initialization failed: {ToSingleLine(exception.Message)}",
+                diagnosticLogPath,
+                loggingResult.WarningMessage);
+        }
+
         LocalTransportHost localTransportHost;
         try
         {
-            localTransportHost = new LocalTransportHost(protocolContext, workspaceHost);
+            localTransportHost = new LocalTransportHost(
+                protocolContext,
+                workspaceHost,
+                documentSynchronizationHost,
+                documentSemanticReadinessHost,
+                documentCompletionHost);
         }
         catch (Exception exception)
         {
             diagnosticLogging.WriteFault("transport_start_failed", exception);
             diagnosticLogging.WriteEvent("service_stopping");
 
+            BeginCompletionShutdownNoThrow(documentCompletionHost, diagnosticLogging);
+            BeginSemanticShutdownNoThrow(documentSemanticReadinessHost, diagnosticLogging);
+            BeginDocumentShutdownNoThrow(documentSynchronizationHost, diagnosticLogging);
             BeginWorkspaceShutdownNoThrow(workspaceHost, diagnosticLogging);
             BeginWorkloadShutdownNoThrow(workloadCoordinator, diagnosticLogging);
             await RetireWorkloadNoThrowAsync(workloadCoordinator, diagnosticLogging)
                 .ConfigureAwait(false);
+            await RetireRoslynNoThrowAsync(roslynLanguageServerHost, diagnosticLogging)
+                .ConfigureAwait(false);
+            DisposeCompletionNoThrow(documentCompletionHost, diagnosticLogging);
+            DisposeSemanticNoThrow(documentSemanticReadinessHost, diagnosticLogging);
+            DisposeDocumentNoThrow(documentSynchronizationHost, diagnosticLogging);
             DisposeWorkspaceNoThrow(workspaceHost, diagnosticLogging);
             RetireSessionNoThrow(sessionCoordinator, diagnosticLogging, writeLifecycleEvents: true);
             DisposeGodotLifetimeNoThrow(godotProcessLifetime, diagnosticLogging);
@@ -293,12 +510,20 @@ internal sealed class CodeServiceHost : IAsyncDisposable
             diagnosticLogging.WriteFault("transport_start_failed", exception);
             diagnosticLogging.WriteEvent("service_stopping");
 
+            BeginCompletionShutdownNoThrow(documentCompletionHost, diagnosticLogging);
+            BeginSemanticShutdownNoThrow(documentSemanticReadinessHost, diagnosticLogging);
+            BeginDocumentShutdownNoThrow(documentSynchronizationHost, diagnosticLogging);
             BeginWorkspaceShutdownNoThrow(workspaceHost, diagnosticLogging);
             BeginWorkloadShutdownNoThrow(workloadCoordinator, diagnosticLogging);
             await DisposeTransportNoThrowAsync(localTransportHost, diagnosticLogging)
                 .ConfigureAwait(false);
             await RetireWorkloadNoThrowAsync(workloadCoordinator, diagnosticLogging)
                 .ConfigureAwait(false);
+            await RetireRoslynNoThrowAsync(roslynLanguageServerHost, diagnosticLogging)
+                .ConfigureAwait(false);
+            DisposeCompletionNoThrow(documentCompletionHost, diagnosticLogging);
+            DisposeSemanticNoThrow(documentSemanticReadinessHost, diagnosticLogging);
+            DisposeDocumentNoThrow(documentSynchronizationHost, diagnosticLogging);
             DisposeWorkspaceNoThrow(workspaceHost, diagnosticLogging);
             RetireSessionNoThrow(sessionCoordinator, diagnosticLogging, writeLifecycleEvents: true);
             DisposeGodotLifetimeNoThrow(godotProcessLifetime, diagnosticLogging);
@@ -347,7 +572,11 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                     sessionCoordinator,
                     diagnosticLogging,
                     workloadCoordinator,
+                    roslynLanguageServerHost,
+                    documentSynchronizationHost,
                     workspaceHost,
+                    documentSemanticReadinessHost,
+                    documentCompletionHost,
                     localTransportHost,
                     bootstrapReadinessWriter),
                 diagnosticLogging.LogPath,
@@ -357,6 +586,9 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         {
             diagnosticLogging.WriteFault("session_start_failed", exception);
             diagnosticLogging.WriteEvent("service_stopping");
+            BeginCompletionShutdownNoThrow(documentCompletionHost, diagnosticLogging);
+            BeginSemanticShutdownNoThrow(documentSemanticReadinessHost, diagnosticLogging);
+            BeginDocumentShutdownNoThrow(documentSynchronizationHost, diagnosticLogging);
             BeginWorkspaceShutdownNoThrow(workspaceHost, diagnosticLogging);
             BeginWorkloadShutdownNoThrow(workloadCoordinator, diagnosticLogging);
             diagnosticLogging.WriteEvent("transport_stopping");
@@ -365,6 +597,11 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                 .ConfigureAwait(false);
             await RetireWorkloadNoThrowAsync(workloadCoordinator, diagnosticLogging)
                 .ConfigureAwait(false);
+            await RetireRoslynNoThrowAsync(roslynLanguageServerHost, diagnosticLogging)
+                .ConfigureAwait(false);
+            DisposeCompletionNoThrow(documentCompletionHost, diagnosticLogging);
+            DisposeSemanticNoThrow(documentSemanticReadinessHost, diagnosticLogging);
+            DisposeDocumentNoThrow(documentSynchronizationHost, diagnosticLogging);
             DisposeWorkspaceNoThrow(workspaceHost, diagnosticLogging);
 
             RetireSessionNoThrow(sessionCoordinator, diagnosticLogging, writeLifecycleEvents: true);
@@ -481,6 +718,20 @@ internal sealed class CodeServiceHost : IAsyncDisposable
 
         _diagnosticLogging.WriteEvent("service_stopping");
 
+        Exception? completionShutdownFailure = BeginCompletionShutdownNoThrow(_documentCompletionHost, _diagnosticLogging);
+        if (completionShutdownFailure is not null) shutdownFailure = completionShutdownFailure;
+
+        Exception? semanticShutdownFailure = BeginSemanticShutdownNoThrow(_documentSemanticReadinessHost, _diagnosticLogging);
+        if (semanticShutdownFailure is not null) shutdownFailure = semanticShutdownFailure;
+
+        Exception? documentShutdownFailure = BeginDocumentShutdownNoThrow(
+            _documentSynchronizationHost,
+            _diagnosticLogging);
+        if (documentShutdownFailure is not null)
+        {
+            shutdownFailure = documentShutdownFailure;
+        }
+
         Exception? workspaceShutdownFailure = BeginWorkspaceShutdownNoThrow(
             _workspaceHost,
             _diagnosticLogging);
@@ -528,6 +779,28 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         if (workloadRetirementFailure is not null)
         {
             shutdownFailure ??= workloadRetirementFailure;
+        }
+
+        Exception? roslynRetirementFailure = await RetireRoslynNoThrowAsync(
+            _roslynLanguageServerHost,
+            _diagnosticLogging).ConfigureAwait(false);
+        if (roslynRetirementFailure is not null)
+        {
+            shutdownFailure ??= roslynRetirementFailure;
+        }
+
+        Exception? completionRetirementFailure = DisposeCompletionNoThrow(_documentCompletionHost, _diagnosticLogging);
+        if (completionRetirementFailure is not null) shutdownFailure ??= completionRetirementFailure;
+
+        Exception? semanticRetirementFailure = DisposeSemanticNoThrow(_documentSemanticReadinessHost, _diagnosticLogging);
+        if (semanticRetirementFailure is not null) shutdownFailure ??= semanticRetirementFailure;
+
+        Exception? documentRetirementFailure = DisposeDocumentNoThrow(
+            _documentSynchronizationHost,
+            _diagnosticLogging);
+        if (documentRetirementFailure is not null)
+        {
+            shutdownFailure ??= documentRetirementFailure;
         }
 
         Exception? workspaceRetirementFailure = DisposeWorkspaceNoThrow(
@@ -614,6 +887,62 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         }
     }
 
+    private static Exception? BeginCompletionShutdownNoThrow(DocumentCompletionHost host, DiagnosticLogging diagnosticLogging)
+    {
+        try { host.BeginShutdown(); return null; }
+        catch (Exception exception) { diagnosticLogging.WriteFault("service_fault", exception); return exception; }
+    }
+
+    private static Exception? DisposeCompletionNoThrow(DocumentCompletionHost host, DiagnosticLogging diagnosticLogging)
+    {
+        try { host.Dispose(); return null; }
+        catch (Exception exception) { diagnosticLogging.WriteFault("service_fault", exception); return exception; }
+    }
+
+    private static Exception? BeginSemanticShutdownNoThrow(DocumentSemanticReadinessHost host, DiagnosticLogging diagnosticLogging)
+    {
+        try { host.BeginShutdown(); return null; }
+        catch (Exception exception) { diagnosticLogging.WriteFault("service_fault", exception); return exception; }
+    }
+
+    private static Exception? DisposeSemanticNoThrow(DocumentSemanticReadinessHost host, DiagnosticLogging diagnosticLogging)
+    {
+        try { host.Dispose(); return null; }
+        catch (Exception exception) { diagnosticLogging.WriteFault("service_fault", exception); return exception; }
+    }
+
+    private static Exception? BeginDocumentShutdownNoThrow(
+        DocumentSynchronizationHost documentSynchronizationHost,
+        DiagnosticLogging diagnosticLogging)
+    {
+        try
+        {
+            documentSynchronizationHost.BeginShutdown();
+            return null;
+        }
+        catch (Exception exception)
+        {
+            diagnosticLogging.WriteFault("service_fault", exception);
+            return exception;
+        }
+    }
+
+    private static Exception? DisposeDocumentNoThrow(
+        DocumentSynchronizationHost documentSynchronizationHost,
+        DiagnosticLogging diagnosticLogging)
+    {
+        try
+        {
+            documentSynchronizationHost.Dispose();
+            return null;
+        }
+        catch (Exception exception)
+        {
+            diagnosticLogging.WriteFault("service_fault", exception);
+            return exception;
+        }
+    }
+
     private static Exception? BeginWorkspaceShutdownNoThrow(
         WorkspaceHost workspaceHost,
         DiagnosticLogging diagnosticLogging)
@@ -680,6 +1009,23 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         catch (Exception exception)
         {
             diagnosticLogging.WriteFault("workload_fault", exception);
+            diagnosticLogging.WriteFault("service_fault", exception);
+            return exception;
+        }
+    }
+
+    private static async Task<Exception?> RetireRoslynNoThrowAsync(
+        RoslynLanguageServerHost roslynLanguageServerHost,
+        DiagnosticLogging diagnosticLogging)
+    {
+        try
+        {
+            await roslynLanguageServerHost.RetireAsync().ConfigureAwait(false);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            diagnosticLogging.WriteFault("roslyn_fault", exception);
             diagnosticLogging.WriteFault("service_fault", exception);
             return exception;
         }
@@ -799,6 +1145,7 @@ internal enum CodeServiceHostCreationFailureKind
     OwnerValidationFailure,
     SessionStartupFailure,
     TransportStartupFailure,
+    RoslynRuntimeProvisioningFailure,
 }
 
 internal readonly record struct CodeServiceHostCreationResult(

@@ -404,14 +404,7 @@ dotnet "$ServerDll" %*
 }
 else {
     $WrapperPath = Join-Path $OutputRoot 'roslyn-state-trace.sh'
-    $ShellSingleQuoteEscape =
-    ([string]([char]39)) +
-    ([string]([char]34)) +
-    ([string]([char]39)) +
-    ([string]([char]34)) +
-    ([string]([char]39))
-
-$EscapedServerDll = $ServerDll.Replace("'", $ShellSingleQuoteEscape)
+    $EscapedServerDll = $ServerDll.Replace("'", "'\"'\"'")
     $Wrapper = @"
 #!/usr/bin/env sh
 export SYSTEMEXPLORER_ROSLYN_STATE_TRACE=1

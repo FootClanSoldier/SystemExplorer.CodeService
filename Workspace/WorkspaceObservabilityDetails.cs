@@ -11,6 +11,10 @@ internal sealed record WorkspaceReadyDetails(
     ProjectIndexOperationTrigger Trigger,
     long WorkloadOperationId,
     long WorkspaceGeneration,
+    long WorkspacePublicationVersion,
+    string ProjectIndexGenerationId,
+    RoslynLanguageServerState RoslynState,
+    long RoslynGeneration,
     int SourceFileCount,
     int ProjectFileCount,
     int SolutionFileCount,
@@ -32,7 +36,8 @@ internal sealed record WorkspaceReconciliationCorrelationDetails(
     long DirtyVersion,
     int DirtySignalCount,
     bool ForceFullSourceValidation,
-    int ForcedFingerprintPathCount);
+    int ForcedFingerprintPathCount,
+    bool ForceRoslynProjectReload);
 
 internal sealed record WorkspaceReconciliationCompletedDetails(
     long WorkloadOperationId,
@@ -41,6 +46,11 @@ internal sealed record WorkspaceReconciliationCompletedDetails(
     int DirtySignalCount,
     bool ForceFullSourceValidation,
     int ForcedFingerprintPathCount,
+    bool ForceRoslynProjectReload,
+    long WorkspacePublicationVersion,
+    string ProjectIndexGenerationId,
+    RoslynLanguageServerState RoslynState,
+    long RoslynGeneration,
     int SourceFileCount,
     int ProjectFileCount,
     int SolutionFileCount,
@@ -55,6 +65,7 @@ internal sealed record WorkspaceReconciliationTerminalDetails(
     int DirtySignalCount,
     bool ForceFullSourceValidation,
     int ForcedFingerprintPathCount,
+    bool ForceRoslynProjectReload,
     double TotalDurationMs,
     bool PendingNewerDirty,
     int PendingNewerDirtySignalCount);

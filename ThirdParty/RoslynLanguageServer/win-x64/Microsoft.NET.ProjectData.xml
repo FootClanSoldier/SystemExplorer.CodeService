@@ -1,0 +1,831 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Microsoft.NET.ProjectData</name>
+    </assembly>
+    <members>
+        <member name="T:Microsoft.NET.ProjectData.CacheFileReader">
+            <summary>
+            Reads <c>.lscache</c> files and produces <see cref="T:Microsoft.NET.ProjectData.CachedSliceData"/> for each project configuration slice.
+            </summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFileReader.CurrentMajorVersion">
+            <summary>
+            The wire-format version header is <c>version=&lt;major&gt;[.&lt;minor&gt;]</c>. The reader
+            accepts any file whose MAJOR version matches the major it was built for, regardless of
+            the minor: a newer minor only adds forward-compatible data (new sections, keys, or
+            <c>@metadata</c>) that the parsing loop below ignores. A different major is rejected as
+            a clean cache miss because the reader cannot safely interpret a format whose major it
+            doesn't understand. Absence of a minor component (e.g. <c>version=2</c>) is treated as
+            <c>.0</c>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.GetProjectFolderCacheFilePath(System.String)">
+            <summary>
+            Gets the cache file path for a given project file path in project-folder mode.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.GetUserFolderCacheFilePath(System.String)">
+             <summary>
+             Gets the cache file path for a given project file path in user-folder mode.
+            
+             <para>The path-computation algorithm lives in the shared
+             <see cref="T:Microsoft.NET.ProjectData.UserFolderCachePath"/> file (linked from the MSBuild task project) so the
+             writer and reader cannot drift.</para>
+             </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.ReadProjectCacheAsync(System.String,System.Boolean,System.Threading.CancellationToken)">
+            <summary>
+            Reads cache data for a single project from its <c>.lscache</c> file.
+            Checks the project folder first, then falls back to the user folder.
+            </summary>
+            <param name="projectFilePath">The absolute path of the project file.</param>
+            <param name="cacheInProject">When <see langword="true"/>, the cache file is stored beside the project file.</param>
+            <param name="cancellationToken">A cancellation token.</param>
+            <returns>The cached slices for the project, or an empty array if no cache exists or the file is invalid.</returns>
+            <remarks>
+            This overload constructs a <see cref="T:Microsoft.NET.ProjectData.CachePathResolver"/> with no SDK
+            binding. Cache files containing <c>&lt;NETSDK&gt;</c> entries cannot be
+            resolved with this overload — use <see cref="M:Microsoft.NET.ProjectData.CacheFileReader.ReadProjectCacheAsync(System.String,System.Boolean,Microsoft.NET.ProjectData.CachePathResolver,System.Threading.CancellationToken)"/>
+            and pass an SDK-bound resolver instead.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.ReadProjectDataSnapshotsAsync(System.String,System.Boolean,System.String,Microsoft.NET.ProjectData.StringPool,System.Threading.CancellationToken)">
+            <summary>
+            Reads cache data for a single project and converts it to canonical immutable snapshots.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.ReadProjectDataSnapshotsAsync(System.String,System.Boolean,Microsoft.NET.ProjectData.CachePathResolver,System.String,Microsoft.NET.ProjectData.StringPool,System.Threading.CancellationToken)">
+            <summary>
+            Reads cache data for a single project with a caller-supplied resolver and converts it to canonical immutable snapshots.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.ReadProjectCacheAsync(System.String,System.Boolean,Microsoft.NET.ProjectData.CachePathResolver,Microsoft.NET.ProjectData.StringPool,System.Threading.CancellationToken)">
+            <summary>
+            Reads cache data for a single project from its <c>.lscache</c> file using
+            a caller-supplied resolver. Use the SDK-bound overloads of
+            <see cref="T:Microsoft.NET.ProjectData.CachePathResolver"/> when reading caches that may contain
+            <c>&lt;NETSDK&gt;</c> entries.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.GetCacheFilePathForWatching(System.String,System.Boolean)">
+            <summary>
+            Gets the path of the cache file that would be watched for a given project.
+            Returns the project-folder path if it exists, otherwise the user-folder path.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.TryParseMajorVersion(System.String,System.Int32@)">
+            <summary>
+            Parses the MAJOR component from a <c>version=&lt;major&gt;[.&lt;minor&gt;]</c> header line.
+            Returns <see langword="false"/> (and sets <paramref name="major"/> to <c>-1</c>) when the
+            line is <see langword="null"/>, lacks the <c>version=</c> prefix, or has a non-numeric or
+            non-positive major component.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.ReadFromAsync(System.IO.TextReader,Microsoft.NET.ProjectData.CachePathResolver,System.String,System.String,System.String,Microsoft.NET.ProjectData.StringPool)">
+            <summary>
+            Reads all project slices from the given reader.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.ExpandCompressedPaths(System.Collections.Generic.List{System.String})">
+            <summary>
+            Expands indentation-compressed paths back into full paths.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFileReader.SliceBuilder.FilterUnresolvableNetSdkLines(System.Collections.Generic.List{System.String})">
+            <summary>
+            Filters out lines whose compressed-path prefix starts with the <c>&lt;NETSDK&gt;</c>
+            sentinel, logging a single warning when any are dropped. Used when the resolver
+            is unbound (no SDK info supplied by the caller) so we skip rather than fabricate
+            a phantom path.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.CachePathResolver">
+            <summary>
+            Converts between absolute file paths and portable cache representations used in <c>.lscache</c> files.
+            </summary>
+            <remarks>
+            <para>Paths are classified into four categories:</para>
+            <list type="bullet">
+              <item><b>NuGet cache</b> — stored as <c>&lt;NUGET&gt;/package/version/...</c></item>
+              <item><b>Dotnet installation</b> — stored as <c>&lt;DOTNET&gt;/packs/...</c></item>
+              <item><b>.NET Framework reference assemblies</b> — stored as <c>&lt;NETFXREF&gt;/v4.7.2/...</c></item>
+              <item><b>Project-relative</b> — resolved relative to the project directory</item>
+            </list>
+            <para>Adapted from dotnet-project-system's CachePathResolver.cs.</para>
+            </remarks>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.#ctor">
+            <summary>
+            Constructs a resolver bound only to the ambient environment
+            (<c>&lt;DOTNET&gt;</c>, <c>&lt;NUGET&gt;</c>, <c>&lt;NETFXREF&gt;</c>).
+            When the cache file contains <c>&lt;NETSDK&gt;</c> entries they cannot
+            be resolved — callers should check <see cref="P:Microsoft.NET.ProjectData.CachePathResolver.IsNetSdkBound"/> and skip
+            or warn accordingly.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.#ctor(System.String)">
+            <summary>
+            Constructs a resolver bound to a specific SDK version. The SDK
+            directory is resolved as <c>&lt;dotnetRoot&gt;/sdk/&lt;sdkVersion&gt;/</c>
+            against the first dotnet root that contains it. The caller is
+            responsible for choosing the SDK version that matches the
+            constraint they are working under (e.g. the version selected by
+            <c>global.json</c> + roll-forward).
+            </summary>
+            <param name="sdkVersion">The exact SDK version, e.g. <c>10.0.202</c>.</param>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.#ctor(System.String,System.String)">
+            <summary>
+            Constructs a resolver bound to a specific SDK directory. Use this
+            overload when the caller already has the absolute path; no
+            directory probing is performed.
+            </summary>
+            <param name="sdkVersion">
+            The SDK version corresponding to <paramref name="sdkPath"/>; recorded
+            for diagnostics. Not currently used in resolution.
+            </param>
+            <param name="sdkPath">Absolute path to the SDK installation directory.</param>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.#ctor(System.String,System.String,System.Collections.Generic.IReadOnlyList{System.String},System.Collections.Generic.IReadOnlyList{System.String},System.String)">
+            <summary>
+            Test seam: constructs a resolver whose root sets are supplied explicitly
+            rather than discovered from the ambient process environment. Pass empty
+            lists / <see langword="null"/> for any root that should not contribute to
+            resolution. Intended for tests that need full isolation from the system
+            <c>dotnet</c> / NuGet / .NET Framework reference assembly install
+            (e.g. so a developer machine with <c>Microsoft.NETCore.App.Ref</c>
+            installed under <c>C:\Program Files\dotnet\packs\</c> does not leak into
+            a synthetic test pack lookup). Not intended for production callers —
+            the public constructors above keep their environment-discovery behaviour
+            unchanged so the .NET server picks up the host's real installs.
+            </summary>
+            <param name="sdkVersion">Optional SDK version for <c>&lt;NETSDK&gt;</c> binding (see other ctors).</param>
+            <param name="sdkPath">Optional absolute SDK path. When supplied, takes precedence over <paramref name="sdkVersion"/>-based probing.</param>
+            <param name="dotnetRoots">Explicit list of dotnet install roots; empty means none.</param>
+            <param name="nugetFolders">Explicit list of NuGet package roots; empty means none.</param>
+            <param name="netFxRefRoot">Explicit .NET Framework reference assemblies root, or <see langword="null"/> for none. Never discovered from the environment by this constructor.</param>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.CachePathResolver.IsNetSdkBound">
+            <summary>
+            <see langword="true"/> when this resolver was constructed with an explicit SDK
+            version or path and can resolve <c>&lt;NETSDK&gt;</c> sentinel paths.
+            <see langword="false"/> for the default (ambient-only) constructor — callers
+            must skip or warn on any <c>&lt;NETSDK&gt;</c> entries in the cache file.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.ToAbsolute(System.String,System.String)">
+            <summary>
+            Converts a portable cache path back to an absolute path.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.IsSafeRelativeNuGetPpSuffix(System.String)">
+            <summary>
+            Defensive guard for the relative suffix of a <c>&lt;NUGETPP&gt;</c> sentinel.
+            Lscache content is writer-generated (not user-supplied), so this is defense in
+            depth rather than a security boundary — but it ensures the suffix can never
+            escape the per-hash directory if a malformed cache or stray external lscache
+            were ever read. Rejects rooted paths and any path containing a <c>..</c>
+            segment. Returns <see langword="true"/> for safe values.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.ResolveNuGetPpPath(System.String,System.String)">
+            <summary>
+            Resolves a <c>&lt;NUGETPP&gt;/{PackageId}/{Version}/...</c> path by scanning for the
+            preprocessor hash directory under the project's intermediate output paths.
+            The SDK writes preprocessed content to <c>obj/{Config}/{TFM}/NuGet/{Hash}/{PackageId}/...</c>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.TryResolveUnderConfiguration(System.String,System.String,System.String)">
+            <summary>
+            Scans <paramref name="objDir"/> for <c>NuGet/{hash}/{nativeSuffix}</c> matches.
+            When <paramref name="configurationName"/> is non-null, only NuGet folders whose
+            path contains <c>{sep}obj{sep}{configurationName}{sep}</c> are considered. When
+            it is null, NuGet folders that match a previously-considered configuration are
+            skipped so the caller can chain "Debug first, others second" without revisiting.
+            Within matching NuGet folders, hash directories are ordered by descending
+            last-write time so the most recent restore wins. Returns the first
+            <c>{hash}/{nativeSuffix}</c> that exists on disk, or <c>null</c> if none match.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.MakeAbsolute(System.String,System.String)">
+            <summary>
+            Replaces a sentinel marker within an arbitrary string with the resolved absolute path prefix.
+            Used for command-line arguments and property values that may embed sentinel paths.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.ResolveNuGetPath(System.String)">
+            <summary>
+            Resolves a ``relative`` path (no leading separator) under the configured NuGet folders,
+            returning the first folder where the file exists, or falling back to the first folder
+            if none exist on disk (so callers still get a usable absolute path).
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.TryResolveLeadingSentinel(System.String)">
+            <summary>
+            If <paramref name="portablePath"/> starts with a known path-style sentinel followed by
+            a ``/`` separator, returns the resolved absolute path. Otherwise returns ``null``.
+            Malformed sentinels (no trailing ``/``, or end-of-string) are rejected so the caller
+            can fall back to project-relative resolution rather than silently dropping a character.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.FindRefPackDirectory(System.String,System.String)">
+            <summary>
+            Locates the on-disk directory for an SDK ref pack.
+            </summary>
+            <param name="packName">The pack name, e.g. <c>Microsoft.NETCore.App.Ref</c>.</param>
+            <param name="targetFramework">
+            The slice's TFM (e.g. <c>net10.0</c>). When non-null and parseable, only pack
+            versions whose major matches the TFM major are considered. When null or unparseable,
+            the highest installed version is returned.
+            </param>
+            <returns>
+            The absolute path of the chosen pack version directory (e.g.
+            <c>C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.7</c>),
+            or <see langword="null"/> if no installed version is found under any dotnet root.
+            </returns>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.FindNuGetFrameworkPackDirectory(System.String,System.String)">
+            <summary>
+            Locates the on-disk directory for an SDK-known ref pack restored through NuGet.
+            </summary>
+            <param name="packName">The targeting pack package name, e.g. <c>Microsoft.NETCore.App.Ref</c>.</param>
+            <param name="targetFramework">The slice's TFM, e.g. <c>net8.0</c>.</param>
+            <returns>
+            The absolute path of the chosen NuGet package directory, or <see langword="null"/> if
+            no matching package is found under any configured NuGet package root.
+            </returns>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.FindSdkAnalyzerPackDirectory(System.String,System.String)">
+            <summary>
+            Locates the on-disk directory for an SDK-known analyzer package restored through NuGet.
+            </summary>
+            <param name="packageId">The analyzer package ID, e.g. <c>Microsoft.NET.ILLink.Tasks</c>.</param>
+            <param name="targetFramework">The slice's TFM, e.g. <c>net10.0</c>.</param>
+            <returns>
+            The absolute path of the chosen NuGet package directory, or <see langword="null"/> if
+            no matching package is found under any configured NuGet package root.
+            </returns>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CachePathResolver.ResolveSdkAnalyzerConfigPolicy(System.String,System.String)">
+            <summary>
+            Resolves a stable SDK analyzer-config policy to the selected SDK's concrete globalconfig files.
+            Missing SDK bindings or missing files are represented by an empty result.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.CachedEmbeddedResource">
+            <summary>
+            Represents a cached embedded resource item from the <c>[embeddedResources]</c> section
+            of a <c>.lscache</c> file, with its associated metadata.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.CachedSliceData">
+            <summary>
+            Represents the parsed data of a single project configuration slice from a <c>.lscache</c> file.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.FrameworkListExpander">
+            <summary>
+            Expands an SDK ref-pack directory into the list of managed metadata references
+            and CS analyzer references it contributes, by reading the pack's
+            <c>data/FrameworkList.xml</c> manifest. Mirrors what the SDK targets do at build
+            time (<c>ResolveTargetingPackAssets</c>) and what
+            <c>dotnet run file.cs</c> does in the C# file fast path.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.FrameworkListExpander.Expand(System.String)">
+            <summary>
+            Reads <c>FrameworkList.xml</c> under <paramref name="packDir"/>/data/ and returns
+            the absolute paths of <c>Type="Managed"</c> entries (metadata references) and
+            <c>Type="Analyzer" Language="cs"</c> entries (analyzer references). Results are
+            cached by <paramref name="packDir"/> for the lifetime of the process.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.HexEncoder">
+            <summary>
+            Lowercase-hex byte-to-string encoder used by cache file fingerprinting and hashing.
+            </summary>
+            <remarks>
+            .NET 5+ ships <c>Convert.ToHexString</c> and .NET 9+ ships <c>Convert.ToHexStringLower</c>,
+            but this file is source-linked into the ``Microsoft.NET.ProjectData.Tasks`` MSBuild task
+            assembly which targets ``netstandard2.0``. Neither BCL API exists there, so we keep a
+            manual implementation that compiles cleanly on both target frameworks.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.HexEncoder.ToLowerHex(System.Byte[])">
+            <summary>
+            Converts <paramref name="bytes"/> to a lowercase hexadecimal string. The returned
+            string has exactly <c>bytes.Length * 2</c> characters.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.KeySchema">
+            <summary>
+            Maps string keys to array indices for O(1) lookup in <see cref="T:Microsoft.NET.ProjectData.KeyValueCollection"/>.
+            Instances are shared across all snapshots, so keys are defined once and reused.
+            </summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.KeySchema.Count">
+            <summary>
+            Gets the number of keys in this schema.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.KeySchema.GetKey(System.Int32)">
+            <summary>
+            Gets the key name at the specified index.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.KeySchema.TryGetIndex(System.String,System.Int32@)">
+            <summary>
+            Tries to get the index for a given key name.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.KeySchema.GetIndexOrNegativeOne(System.String)">
+            <summary>
+            Gets the index for a given key name, or -1 if not found.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.KeyValueCollection">
+            <summary>
+            Optimized key-value collection that exploits the regular key structure of
+            project data. Keys are defined by a shared <see cref="T:Microsoft.NET.ProjectData.KeySchema"/>, and values
+            are stored as a flat array of strings indexed by the schema. This avoids
+            dictionary overhead for what is essentially a fixed set of known keys.
+            </summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.KeyValueCollection.Schema">
+            <summary>
+            Gets the schema that defines the key layout.
+            </summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.KeyValueCollection.IsEmpty">
+            <summary>
+            Gets whether this collection has no values (was constructed with an empty values array).
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.KeyValueCollection.TryGetValue(System.String,System.String@)">
+            <summary>
+            Tries to get the value for a given key.
+            Returns <see langword="true"/> if the key exists and has a non-null value.
+            </summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.KeyValueCollection.Item(System.String)">
+            <summary>
+            Gets the value for a given key, or <see langword="null"/> if not present.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.KeyValueCollection.GetEnumerator">
+            <summary>
+            Enumerates all non-null key-value pairs.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.KeyValueCollection.ToDictionary">
+            <summary>
+            Converts to a dictionary for serialization across process boundaries.
+            Only includes non-null values.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.ProjectDataItem">
+            <summary>
+            A single immutable item in a project (e.g., a source file, a reference).
+            </summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.ProjectDataItem.ItemSpec">
+            <summary>The item specification (typically a file path).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.ProjectDataItem.Metadata">
+            <summary>Per-item metadata (e.g., Aliases, Link, EmbedInteropTypes).</summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.ProjectDataSnapshot">
+            <summary>
+            Immutable snapshot of all data for a single project configuration slice.
+            </summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.ProjectDataSnapshot.ProjectPath">
+            <summary>The absolute path of the project file.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.ProjectDataSnapshot.Dimensions">
+            <summary>The project configuration slice dimensions (e.g., TargetFramework=net10.0).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.ProjectDataSnapshot.Properties">
+            <summary>Project properties (e.g., AssemblyName, RootNamespace, TargetPath).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.ProjectDataSnapshot.ItemsByType">
+            <summary>Items grouped by type (e.g., Compile, MetadataReference, AnalyzerReference).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.ProjectDataSnapshot.IsPrimary">
+            <summary>Whether this is the primary slice for project-level queries.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.ProjectDataSnapshot.LastDesignTimeBuildSucceeded">
+            <summary>Whether the last design-time build succeeded.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.ProjectDataSnapshot.Capabilities">
+            <summary>Capabilities exported by this project slice.</summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.ProjectDataSnapshotFactory">
+            <summary>
+            Converts parsed <see cref="T:Microsoft.NET.ProjectData.CachedSliceData"/> from project-data cache files
+            into canonical immutable <see cref="T:Microsoft.NET.ProjectData.ProjectDataSnapshot"/> instances.
+            </summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectDataSnapshotFactory.PropertySchema">
+            <summary>
+            The schema for project-level properties. All properties from the cache file
+            are stored here, along with the well-known properties from the schema.
+            </summary>
+            <remarks>
+            This schema is shared across all snapshots and is the basis for O(1) property lookups.
+            Additional properties found in cache files that aren't in this schema are still accessible
+            through a per-snapshot schema extension.
+            </remarks>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectDataSnapshotFactory.SourceFileMetadataSchema">
+            <summary>
+            Well-known item metadata schemas.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.ProjectDataSnapshotFactory.CreateSnapshots(System.Collections.Immutable.ImmutableArray{Microsoft.NET.ProjectData.CachedSliceData},System.String)">
+            <summary>
+            Converts a set of parsed cache slices into canonical project-data snapshots.
+            </summary>
+            <param name="slices">The parsed cache slices.</param>
+            <param name="solutionPath">
+            Runtime-injected solution path. Overrides any stale <c>SolutionPath</c> value
+            that may exist in the cache. When <see langword="null"/> or empty, the key is
+            omitted from the snapshot properties so consumers see "no solution."
+            </param>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.ProjectDataSnapshotFactory.ValidateRequiredData(System.Collections.Immutable.ImmutableArray{Microsoft.NET.ProjectData.ProjectDataSnapshot})">
+            <summary>
+            Validates that required properties and item types from the schema are present in every snapshot.
+            Returns a list of missing required names (empty if all present).
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.ProjectDataSnapshotFactory.CreateSnapshot(Microsoft.NET.ProjectData.CachedSliceData,System.String)">
+            <summary>
+            Converts a single parsed cache slice into a canonical project-data snapshot.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.ProjectDataSnapshotFactory.MergeSharedIntoSlice(Microsoft.NET.ProjectData.ProjectDataSnapshot,Microsoft.NET.ProjectData.ProjectDataSnapshot)">
+            <summary>
+            Merges items and properties from the shared (dimensionless) slice into a per-TFM slice.
+            TFM-specific items and properties take priority; shared data fills in the gaps.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.ProjectDataSnapshotFactory.AddItems``1(System.Collections.Immutable.ImmutableDictionary{System.String,System.Collections.Immutable.ImmutableArray{Microsoft.NET.ProjectData.ProjectDataItem}}.Builder,System.String,System.Collections.Immutable.ImmutableArray{``0},System.Func{System.Collections.Immutable.ImmutableArray{``0},System.Collections.Immutable.ImmutableArray{Microsoft.NET.ProjectData.ProjectDataItem}})">
+            <summary>
+            Adds items to the builder. Always adds the key (even with an empty array) so that
+            required item types are present for validation and downstream consumers.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.SdkKnownPackResolver">
+            <summary>
+            Reads the selected .NET SDK's bundled-version tables so cache files can
+            represent SDK-known NuGet packs by logical package name.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.StringComparers">
+            <summary>
+            Well-known string comparers and comparisons for Data Model types.
+            </summary>
+            <remarks>
+            This pattern is borrowed from dotnet-project-system, where centralizing comparison
+            semantics avoids scattered <see cref="T:System.StringComparer"/> and <see cref="T:System.StringComparison"/>
+            choices throughout the codebase.
+            </remarks>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparers.ItemType">
+            <summary>Comparer for item type names (e.g., "Compile", "MetadataReference").</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparers.ItemMetadataName">
+            <summary>Comparer for item metadata key names (e.g., "aliases", "folderNames").</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparers.PropertyName">
+            <summary>Comparer for property names (e.g., "AssemblyName", "TargetPath").</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparers.Capabilities">
+            <summary>Comparer for capability names (e.g., "SupportsHotReload", "SupportsIncrementalBuild").</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparers.ItemSpec">
+            <summary>Comparer for item spec values (file paths or identifiers).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparers.Paths">
+            <summary>Comparer for file paths, respecting platform case sensitivity.</summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.StringComparisons">
+            <summary>
+            Well-known string comparisons for Data Model types.
+            </summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparisons.ItemType">
+            <summary>Comparison for item type names.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparisons.ItemMetadataName">
+            <summary>Comparison for item metadata key names.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparisons.PropertyName">
+            <summary>Comparison for property names.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.StringComparisons.Paths">
+            <summary>Comparison for file paths, respecting platform case sensitivity.</summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.StringPool">
+             <summary>
+             A thread-safe string deduplication pool. Ensures that equal strings share a single
+             object instance, reducing memory when many projects carry identical paths (SDK refs,
+             analyzer paths, NuGet packages, capabilities, property keys, etc.).
+            
+             <para>Internally uses striped <see cref="T:System.Collections.Concurrent.ConcurrentDictionary`2"/>s so
+             concurrent readers and writers experience minimal contention. Striping improves
+             cache locality across the 16 independent buckets.</para>
+            
+             <para>The pool is intended to live as long as the data it deduplicates (e.g. scoped to
+             the <c>DataModelSharedState</c> lifetime). It is not self-evicting — entries stay until
+             the pool is collected.</para>
+             </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.StringPool.GetOrAdd(System.String)">
+            <summary>
+            Returns the canonical instance of <paramref name="value"/>. If an equal string
+            is already in the pool, the pooled instance is returned and <paramref name="value"/>
+            becomes eligible for GC. Otherwise <paramref name="value"/> is added to the pool
+            and returned as-is.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.UnsupportedProjectDataMarker">
+            <summary>
+            Reads and writes the user-cache sidecar that records projects known not to produce ProjectData.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.UserFolderCachePath">
+             <summary>
+             Computes the user-folder location for a project's <c>.lscache</c> file.
+            
+             <para>This file is the single source of truth for the layout. The MSBuild
+             task (writer/merger) and the runtime reader both call <see cref="M:Microsoft.NET.ProjectData.UserFolderCachePath.Compute(System.String)"/>
+             so the path the writer produces is exactly the path the reader looks for.
+             The Tasks project links this source file into its own assembly via a
+             <c>&lt;Compile Include=...&gt;</c> reference rather than taking a project
+             dependency on the cache assembly.</para>
+             </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.UserFolderCachePath.Compute(System.String)">
+            <summary>
+            Returns the absolute path of the user-folder cache file for
+            <paramref name="projectFilePath"/>. Layout (matches the v1 reader):
+            <c>&lt;base&gt;/&lt;sha1[0..2]&gt;/&lt;sha1[2..]&gt;</c> where the SHA-1
+            hash is taken over the lower-cased project path on case-insensitive
+            filesystems (Windows / macOS) and the original casing on Linux.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.UserFolderCachePath.GetCacheBaseDirectory">
+             <summary>
+             Returns the cache root directory used by <see cref="M:Microsoft.NET.ProjectData.UserFolderCachePath.Compute(System.String)"/>.
+            
+             <para>Set <c>DOTNET_PROJECTDATA_CACHE_DIR</c> to override the cache root
+             exactly. Otherwise the cache is stored under the platform's user-local
+             cache directory.</para>
+             </summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.UserFolderCachePath.FileExtension">
+            <summary>The cache file extension (currently <c>.lscache</c>).</summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.ProjectProperties">
+            <summary>Strongly-typed constants for all Data Model property names.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.AssemblyName">
+            <summary>Assembly output name.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.OutputType">
+            <summary>Project output type: Library, Exe, WinExe.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.TargetFramework">
+            <summary>Active target framework moniker (e.g., net10.0).</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.TargetFrameworkIdentifier">
+            <summary>Framework identifier (e.g., .NETCoreApp).</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.ProjectAssetsFile">
+            <summary>Path to project.assets.json.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.TargetPath">
+            <summary>Full path to the primary build output assembly.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.RootNamespace">
+            <summary>Root namespace for the project.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.TargetFrameworkVersion">
+            <summary>Framework version (e.g., v10.0).</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.TargetRefPath">
+            <summary>Path to the ref assembly (if produced).</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.MaxSupportedLangVersion">
+            <summary>Maximum C# language version supported by the SDK.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.RunAnalyzers">
+            <summary>Whether analyzers run during build.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.RunAnalyzersDuringLiveAnalysis">
+            <summary>Whether analyzers run during live analysis.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.CompilerGeneratedFilesOutputPath">
+            <summary>Directory for source-generated files.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.BaseIntermediateOutputPath">
+            <summary>Root intermediate-output directory (default obj/). Persisted so the redirected location is known when releasing VS Code's recursive watcher handles before a folder rename on Windows.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.BaseOutputPath">
+            <summary>Root build-output directory (default bin/). Persisted so the redirected location is known when releasing VS Code's recursive watcher handles before a folder rename on Windows.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.SolutionPath">
+            <summary>Path to the solution file (injected at runtime, not from cache).</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.TemporaryDependencyNodeTargetIdentifier">
+            <summary>Roslyn/CPS dependency-node TFM identifier. Duplicates TargetFramework's value but Roslyn keys on this exact (intentionally awkward) name to identify a dependency node's target framework, so it must be persisted under this name for cache-load workspace hydration. Not otherwise read as a typed property.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectProperties.All">
+            <summary>
+            All Data Model property names. Every property is exported into the cache file's
+            <c>[properties]</c> section by the writer (the generated <c>_ProjectDataProperties</c>
+            MSBuild allow-list is the same set). This is also the forward-compatibility
+            "known [properties] key" set: a key NOT listed here is treated as data authored by a
+            newer writer and preserved losslessly rather than dropped.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.ProjectItems">
+            <summary>Strongly-typed constants for Data Model item types and metadata.</summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.ProjectItems.Compile">
+            <summary>Source files included in compilation.</summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.ProjectItems.MetadataReference">
+            <summary>Assembly references.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectItems.AnalyzerReference">
+            <summary>Roslyn analyzer assemblies.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectItems.AnalyzerConfigFile">
+            <summary>EditorConfig and global analyzer config files.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectItems.AdditionalFile">
+            <summary>Additional files passed to analyzers.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectItems.ProjectReference">
+            <summary>Project-to-project references.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectItems.CommandLineArgument">
+            <summary>Compiler command-line arguments.</summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.ProjectItems.EmbeddedResource">
+            <summary>Embedded resource files (.resx, etc.).</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectItems.RequiredItemTypes">
+            <summary>Item types that must be present (even if empty) in every valid snapshot.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectItems.AllMetadata">
+            <summary>
+            Every metadata key the writer can emit on any item (the union across all item
+            types). Used by forward-compatibility preservation to tell a known <c>@metadata</c>
+            line from one written by a newer version that must be carried through losslessly.
+            </summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.ProjectItems.MetadataByItemType">
+            <summary>
+            Metadata keys the writer can emit, grouped by the item type that carries them (NOT a
+            flattened union). Forward-compatibility preservation uses this to decide what is
+            "known" <em>per item type</em>, so a newer version that reuses an existing metadata
+            name on a different item type is still treated as unknown and carried through losslessly.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.CacheFormat">
+            <summary>
+            Wire-format tokens for the on-disk <c>.lscache</c> file. Shared by the writer
+            (<c>Microsoft.NET.ProjectData.Tasks</c>) and the reader
+            (<c>Microsoft.NET.ProjectData</c>) so renames cannot silently drop a section.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.CacheFormat.Sections">
+            <summary>Section names emitted as <c>[name]</c> by the writer and matched without brackets by the reader.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.Project">
+            <summary>Project identity, language, and slice markers.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.SliceDimensions">
+            <summary>Per-slice dimensions (e.g., TargetFramework=net10.0).</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.Properties">
+            <summary>MSBuild properties evaluated for the project/slice.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.CommandLineArguments">
+            <summary>Compiler command-line arguments in evaluation order.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.SourceFiles">
+            <summary>Source files in the @(Compile) item set.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.MetadataReferences">
+            <summary>Assembly references (@(MetadataReference)) with optional aliases/embedInteropTypes.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.AnalyzerReferences">
+            <summary>Roslyn analyzer assemblies (@(AnalyzerReference)).</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.AnalyzerConfigFiles">
+            <summary>EditorConfig / global analyzer config files.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.AdditionalFiles">
+            <summary>Files passed to analyzers via @(AdditionalFile).</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.ProjectReferences">
+            <summary>Resolved project-to-project references.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.EmbeddedResources">
+            <summary>Embedded resource files (.resx, etc.) with optional Generator/LastGenOutput/CustomToolNamespace metadata.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.Capabilities">
+            <summary>Project capabilities flags.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.FrameworkPacks">
+            <summary>Ref-pack names (e.g. Microsoft.NETCore.App.Ref); reader probes the SDK install first, then the NuGet cache, so the same cache works whether the writing machine resolved the pack from &lt;DOTNET&gt;/packs/ or from &lt;NUGET&gt;/.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.SdkAnalyzerPacks">
+            <summary>SDK-shipped analyzer NuGet package IDs; reader enumerates analyzers/dotnet/&lt;lang&gt;/ on disk.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.SdkAnalyzerConfigPolicy">
+            <summary>Policy entries for SDK-shipped analyzer config files; reader resolves them under the bound SDK.</summary>
+        </member>
+        <member name="F:Microsoft.NET.ProjectData.CacheFormat.Sections.MetadataBySection">
+            <summary>
+            Item <c>@metadata</c> keys the writer can emit, keyed by the WIRE section that carries
+            them (resolved through the section's <c>itemType</c> link in the schema). Used by
+            forward-compatibility preservation to judge "known" metadata <em>per section</em>, so a
+            newer writer that reuses an existing metadata name on a different item type is still
+            preserved rather than mistaken for regenerable data. Only sections whose item type
+            emits metadata appear here; a section absent from the map emits no metadata.
+            </summary>
+        </member>
+        <member name="M:Microsoft.NET.ProjectData.CacheFormat.SectionHeader(System.String)">
+            <summary>Returns <paramref name="name"/> wrapped in section delimiters, e.g. <c>[sourceFiles]</c>.</summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.PathSentinels">
+            <summary>
+            Sentinel prefixes embedded in encoded paths in the <c>.lscache</c> file.
+            The writer rewrites version-specific or location-specific paths to these sentinels
+            so the cache is portable across machines and SDK upgrades; the reader resolves them
+            via <c>CachePathResolver</c>.
+            </summary>
+        </member>
+        <member name="T:Microsoft.NET.ProjectData.TypedProperties">
+            <summary>Strongly-typed accessor over <see cref="T:Microsoft.NET.ProjectData.KeyValueCollection"/>.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.AssemblyName">
+            <summary>Assembly output name.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.OutputType">
+            <summary>Project output type: Library, Exe, WinExe.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.TargetFramework">
+            <summary>Active target framework moniker (e.g., net10.0).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.TargetFrameworkIdentifier">
+            <summary>Framework identifier (e.g., .NETCoreApp).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.ProjectAssetsFile">
+            <summary>Path to project.assets.json.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.TargetPath">
+            <summary>Full path to the primary build output assembly.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.RootNamespace">
+            <summary>Root namespace for the project.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.TargetFrameworkVersion">
+            <summary>Framework version (e.g., v10.0).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.TargetRefPath">
+            <summary>Path to the ref assembly (if produced).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.MaxSupportedLangVersion">
+            <summary>Maximum C# language version supported by the SDK.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.RunAnalyzers">
+            <summary>Whether analyzers run during build.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.RunAnalyzersDuringLiveAnalysis">
+            <summary>Whether analyzers run during live analysis.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.CompilerGeneratedFilesOutputPath">
+            <summary>Directory for source-generated files.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.BaseIntermediateOutputPath">
+            <summary>Root intermediate-output directory (default obj/). Persisted so the redirected location is known when releasing VS Code's recursive watcher handles before a folder rename on Windows.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.BaseOutputPath">
+            <summary>Root build-output directory (default bin/). Persisted so the redirected location is known when releasing VS Code's recursive watcher handles before a folder rename on Windows.</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.SolutionPath">
+            <summary>Path to the solution file (injected at runtime, not from cache).</summary>
+        </member>
+        <member name="P:Microsoft.NET.ProjectData.TypedProperties.TemporaryDependencyNodeTargetIdentifier">
+            <summary>Roslyn/CPS dependency-node TFM identifier. Duplicates TargetFramework's value but Roslyn keys on this exact (intentionally awkward) name to identify a dependency node's target framework, so it must be persisted under this name for cache-load workspace hydration. Not otherwise read as a typed property.</summary>
+        </member>
+    </members>
+</doc>

@@ -1,0 +1,554 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Microsoft.CodeAnalysis.Workspaces.MSBuild.Contracts</name>
+    </assembly>
+    <members>
+        <member name="T:Microsoft.CodeAnalysis.MSBuild.DocumentFileInfo">
+            <summary>
+            Represents a source file that is part of a project file.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.DocumentFileInfo.#ctor(System.String,System.String,System.Boolean,System.Boolean,System.String[])">
+            <summary>
+            Represents a source file that is part of a project file.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.DocumentFileInfo.FilePath">
+            <summary>
+            The absolute path to the document file on disk.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.DocumentFileInfo.LogicalPath">
+            <summary>
+            A fictional path to the document, relative to the project.
+            The document may not actually exist at this location, and is used
+            to represent linked documents. This includes the file name.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.DocumentFileInfo.IsLinked">
+            <summary>
+            True if the document has a logical path that differs from its 
+            absolute file path.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.DocumentFileInfo.IsGenerated">
+            <summary>
+            True if the file was generated during build.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.DocumentFileInfo.Folders">
+            <summary>
+            Containing folders of the document relative to the containing project root path.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.MSBuild.IBuildHost">
+            <summary>
+            RPC methods.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.IBuildHost.FindBestMSBuild(System.String)">
+            <summary>
+            Finds the best MSBuild instance installed for loading the given project or solution.
+            </summary>
+            <remarks>
+            This may return MSBuild instances that are not loadable by the BuildHost process.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.IBuildHost.HasUsableMSBuild(System.String)">
+            <summary>
+            Determines whether there is a MSBuild instance that is loadable by the BuildHost process.
+            </summary>
+            <remarks>
+            This may return true even if the project or solution require a newer version of MSBuild.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.IBuildHost.ConfigureGlobalState(System.String[],System.Collections.Generic.Dictionary{System.String,System.String},System.String,System.Nullable{System.Int32})">
+            <summary>
+            Called once on a new process to configure some global state. This is used for these rather than passing through command line strings, since these contain data that might
+            contain paths (which can have escaping issues) or could be quite large (which could run into length limits).
+            </summary>
+            <param name="knownCommandLineParserLanguages">Languages whose command line parser we understand (ICommandLineParserService).</param>
+            <param name="maxNodeCount">The maximum number of MSBuild nodes that may build concurrently, or <see langword="null"/> to use MSBuild's default. Builds submitted in parallel can run in parallel up to this limit.</param>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.IBuildHost.LoadProject(System.String,System.String,System.String,System.String,System.Collections.Generic.IDictionary{System.String,System.String})">
+            <summary>
+            Permits loading a project file which only exists in-memory, for example, for file-based program scenarios.
+            </summary>
+            <param name="projectFilePath">A path to a project file which may or may not exist on disk. Note that an extension that is known by MSBuild, such as .csproj or .vbproj, should be used here.</param>
+            <param name="physicalFilePath">The original C# file path.</param>
+            <param name="projectContent">The project file XML content.</param>
+            <returns>A handle to the loaded project (<see cref="T:Microsoft.CodeAnalysis.MSBuild.IProjectFile"/>).</returns>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.IBuildHost.LoadProjectInstance(System.String,System.String,System.Collections.Generic.IDictionary{System.String,System.String})">
+            <summary>
+            Permits loading a project instance which only exists in-memory, for example, for file-based program scenarios.
+            </summary>
+            <param name="projectFilePath">A path to a project file which may or may not exist on disk.</param>
+            <param name="projectContent">The project file XML content.</param>
+            <returns>A handle to the loaded project instance (<see cref="T:Microsoft.CodeAnalysis.MSBuild.IProjectInstance"/>).</returns>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.MSBuild.IProjectFile">
+            <summary>
+            RPC methods.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.MSBuild.IProjectInstance">
+            <summary>
+            RPC methods for MSBuild's <c>ProjectInstance</c> object.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.MonoMSBuildDiscovery.RealPath(System.String)">
+            <summary>
+            Returns the canonicalized absolute path from a given path, expanding symbolic links and resolving
+            references to /./, /../ and extra '/' path characters.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.MonoMSBuildDiscovery.GetMonoRuntimeExecutablePath">
+            <summary>
+            Returns the fully qualified path to the mono executable.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.MonoMSBuildDiscovery.GetMonoLibDirPath">
+            <summary>
+            Returns the path to the mono lib directory, usually /usr/bin/mono.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.MonoMSBuildDiscovery.GetMonoMSBuildDirectory">
+            <summary>
+            Returns the path to MSBuild, the actual directory containing MSBuild.dll and friends. Usually should end in Current/bin.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.MSBuildLocation.Path">
+            <summary>
+            This is the path to the directory containing the MSBuild binaries.
+            </summary>
+            <remarks>
+            When running on .NET this will be the path to the SDK required for loading projects.
+            </remarks>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.MSBuildLocation.Version">
+            <summary>
+            This is the version of MSBuild at this location.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo">
+            <summary>
+            Provides information about a project that has been loaded from disk and
+            built with MSBuild. If the project is multi-targeting, this represents
+            the information from a single target framework.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.Language">
+            <summary>
+            The language of this project.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.FilePath">
+            <summary>
+            The path to the project file for this project.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.OutputFilePath">
+            <summary>
+            The path to the output file this project generates.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.OutputRefFilePath">
+            <summary>
+            The path to the reference assembly output file this project generates.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.IntermediateOutputFilePath">
+            <summary>
+            The path to the intermediate output file this project generates.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.DefaultNamespace">
+            <summary>
+            The default namespace of the project ("" if not defined, which means global namespace),
+            or null if it is unknown or not applicable. 
+            </summary>
+            <remarks>
+            Right now VB doesn't have the concept of "default namespace". But we conjure one in workspace 
+            by assigning the value of the project's root namespace to it. So various feature can choose to 
+            use it for their own purpose.
+            In the future, we might consider officially exposing "default namespace" for VB project 
+            (e.g. through a "defaultnamespace" msbuild property)
+            </remarks>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.TargetFramework">
+            <summary>
+            The target framework of this project.
+            This takes the form of the 'short name' form used by NuGet (e.g. net46, netcoreapp2.0, etc.)
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.TargetFrameworkIdentifier">
+            <summary>
+            The target framework identifier of this project.
+            Used to determine if a project is targeting .net core.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.CommandLineArgs">
+            <summary>
+            The command line args used to compile the project.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.Documents">
+            <summary>
+            The source documents.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.AdditionalDocuments">
+            <summary>
+            The additional documents.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.AnalyzerConfigDocuments">
+            <summary>
+            The analyzer config documents.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.ProjectReferences">
+            <summary>
+            References to other projects.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.ProjectCapabilities">
+            <summary>
+            The msbuild project capabilities.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.ContentFilePaths">
+            <summary>
+            The paths to content files included in the project.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.ProjectAssetsFilePath">
+            <summary>
+            The path to the project.assets.json path in obj/.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.PackageReferences">
+            <summary>
+            Any package references defined on the project.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.MetadataReferences">
+            <summary>
+            Metadata references referenced by the project if not specified in <see cref="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.CommandLineArgs"/>.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.CodePage">
+            <summary>
+            The value of `CodePage` property. Zero if not specified.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.ChecksumAlgorithm">
+            <summary>
+            The value of `ChecksumAlgorithm` or `PdbChecksumAlgorithm` property.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileInfo.TargetFrameworkVersion">
+            <summary>
+            Target framework version (for .net framework projects)
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.MSBuild.ProjectFileReference">
+            <summary>
+            Represents a reference to another project file.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileReference.Path">
+            <summary>
+            The path on disk to the other project file. 
+            This path may be relative to the referencing project's file or an absolute path.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileReference.Aliases">
+            <summary>
+            The aliases assigned to this reference, if any.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.ProjectFileReference.ReferenceOutputAssembly">
+            <summary>
+            The value of "ReferenceOutputAssembly" metadata.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.Request.Id">
+            <summary>
+            The request ID.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.Request.TargetObject">
+            <summary>
+            The index of the targeted object.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.MSBuild.Request.Method">
+            <summary>
+            The name of the method to call.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.MSBuild.TextReaderExtensions.TryReadLineOrReturnNullIfCancelledAsync(System.IO.TextReader,System.Threading.CancellationToken)">
+            <summary>
+            Returns the next line from the string, or null if the stream is closed or the cancellation token was triggered.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfNull``1(``0,System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is null.  This method executes in
+            all builds
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfNull``1(System.Nullable{``0},System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is null.  This method executes in
+            all builds
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfNull``1(``0,System.String,System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is null.  This method executes in
+            all builds
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfNull``1(``0,Microsoft.CodeAnalysis.Contract.ThrowIfNullInterpolatedStringHandler{``0},System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is null.  This method executes in
+            all builds
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfFalse(System.Boolean,System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is false.  This method executes
+            in all builds
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfFalse(System.Boolean,System.String,System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is false.  This method executes
+            in all builds
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfFalse(System.Boolean,Microsoft.CodeAnalysis.Contract.ThrowIfFalseInterpolatedStringHandler,System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is false.  This method executes
+            in all builds
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfTrue(System.Boolean,System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is true. This method executes in
+            all builds.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfTrue(System.Boolean,System.String,System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is true. This method executes in
+            all builds.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Contract.ThrowIfTrue(System.Boolean,Microsoft.CodeAnalysis.Contract.ThrowIfTrueInterpolatedStringHandler,System.Int32,System.String)">
+            <summary>
+            Throws a non-accessible exception if the provided value is true. This method executes in
+            all builds.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.ErrorReporting.FailFast.Handler">
+            <summary>
+            A pre-created delegate to assign to <see cref="T:Microsoft.CodeAnalysis.ErrorReporting.FatalError.ErrorReporterHandler" /> if needed.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FailFast.DumpStackTrace(System.Exception,System.String)">
+            <summary>
+            Dumps the stack trace of the exception and the handler to the console. This is useful
+            for debugging unit tests that hit a fatal exception
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FailFast.Assert(System.Boolean,System.String)">
+            <summary>
+            Checks for the given <paramref name="condition"/>; if the <paramref name="condition"/> is <c>true</c>, 
+            immediately terminates the process without running any pending <c>finally</c> blocks or finalizers
+            and causes a crash dump to be collected (if the system is configured to do so). 
+            Otherwise, the process continues normally.
+            </summary>
+            <param name="condition">The conditional expression to evaluate.</param>
+            <param name="message">An optional message to be recorded in the dump in case of failure. Can be <c>null</c>.</param>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ErrorReporting.OperationCanceledIgnoringCallerTokenException">
+            <summary>
+            Thrown when async code must cancel the current execution but does not have access to the <see cref="T:System.Threading.CancellationTokenSource"/> of the <see cref="T:System.Threading.CancellationToken"/> passed to the code.
+            Should be used in very rare cases where the <see cref="T:System.Threading.CancellationTokenSource"/> is out of our control (e.g. owned but not exposed by JSON RPC in certain call-back scenarios).
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.SetHandlers(Microsoft.CodeAnalysis.ErrorReporting.FatalError.ErrorReporterHandler,Microsoft.CodeAnalysis.ErrorReporting.FatalError.ErrorReporterHandler)">
+            <summary>
+            Set by the host to handle an error report; this may crash the process or report telemetry.
+            </summary>
+            <param name="nonFatalHandler">A handler that will not crash the process when called.  Used when calling <see
+            cref="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.ReportNonFatalError(System.Exception,Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity,System.Boolean)"/></param>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.OverwriteHandler(Microsoft.CodeAnalysis.ErrorReporting.FatalError.ErrorReporterHandler)">
+            <summary>
+            Same as setting the Handler property except that it avoids the assert.  This is useful in
+            test code which needs to verify the handler is called in specific cases and will continually
+            overwrite this value.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.CopyHandlersTo(System.Reflection.Assembly)">
+            <summary>
+            Copies the handler in this instance to the linked copy of this type in this other assembly.
+            </summary>
+            <remarks>
+            This file is linked into multiple layers, but we want to ensure that all layers have the same copy.
+            This lets us copy the handler in this instance into the same in another instance.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.ReportAndPropagate(System.Exception,Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity)">
+            <summary>
+            Use in an exception filter to report an error without catching the exception.
+            The error is reported by calling <see cref="F:Microsoft.CodeAnalysis.ErrorReporting.FatalError.s_handler"/>.
+            </summary>
+            <returns><see langword="false"/> to avoid catching the exception.</returns>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.ReportAndPropagateUnlessCanceled(System.Exception,Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity)">
+            <summary>
+            Use in an exception filter to report an error (by calling <see cref="F:Microsoft.CodeAnalysis.ErrorReporting.FatalError.s_handler"/>), unless the
+            operation has been cancelled. The exception is never caught.
+            </summary>
+            <returns><see langword="false"/> to avoid catching the exception.</returns>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.ReportAndPropagateUnlessCanceled(System.Exception,System.Threading.CancellationToken,Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity)">
+             <summary>
+             <para>Use in an exception filter to report an error (by calling <see cref="F:Microsoft.CodeAnalysis.ErrorReporting.FatalError.s_handler"/>), unless the
+             operation has been cancelled at the request of <paramref name="contextCancellationToken"/>. The exception is
+             never caught.</para>
+            
+             <para>Cancellable operations are only expected to throw <see cref="T:System.OperationCanceledException"/> if the
+             applicable <paramref name="contextCancellationToken"/> indicates cancellation is requested by setting
+             <see cref="P:System.Threading.CancellationToken.IsCancellationRequested"/>. Unexpected cancellation, i.e. an
+             <see cref="T:System.OperationCanceledException"/> which occurs without <paramref name="contextCancellationToken"/>
+             requesting cancellation, is treated as an error by this method.</para>
+            
+             <para>This method does not require <see cref="P:System.OperationCanceledException.CancellationToken"/> to match
+             <paramref name="contextCancellationToken"/>, provided cancellation is expected per the previous
+             paragraph.</para>
+             </summary>
+             <param name="contextCancellationToken">A <see cref="T:System.Threading.CancellationToken"/> which will have
+             <see cref="P:System.Threading.CancellationToken.IsCancellationRequested"/> set if cancellation is expected.</param>
+             <returns><see langword="false"/> to avoid catching the exception.</returns>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.ReportAndCatch(System.Exception,Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity)">
+            <summary>
+            Report an error.
+            Calls <see cref="F:Microsoft.CodeAnalysis.ErrorReporting.FatalError.s_handler"/> and doesn't pass the exception through (the method returns true).
+            This is generally expected to be used within an exception filter as that allows us to
+            capture data at the point the exception is thrown rather than when it is handled.
+            However, it can also be used outside of an exception filter. If the exception has not
+            already been thrown the method will throw and catch it itself to ensure we get a useful
+            stack trace.
+            </summary>
+            <returns>True to catch the exception.</returns>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.ReportAndCatchUnlessCanceled(System.Exception,Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity)">
+            <summary>
+            Use in an exception filter to report an error (by calling <see cref="F:Microsoft.CodeAnalysis.ErrorReporting.FatalError.s_handler"/>) and catch
+            the exception, unless the operation was cancelled.
+            </summary>
+            <returns><see langword="true"/> to catch the exception if the error was reported; otherwise,
+            <see langword="false"/> to propagate the exception if the operation was cancelled.</returns>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.ReportAndCatchUnlessCanceled(System.Exception,System.Threading.CancellationToken,Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity)">
+             <summary>
+             <para>Use in an exception filter to report an error (by calling <see cref="F:Microsoft.CodeAnalysis.ErrorReporting.FatalError.s_handler"/>) and
+             catch the exception, unless the operation was cancelled at the request of
+             <paramref name="contextCancellationToken"/>.</para>
+            
+             <para>Cancellable operations are only expected to throw <see cref="T:System.OperationCanceledException"/> if the
+             applicable <paramref name="contextCancellationToken"/> indicates cancellation is requested by setting
+             <see cref="P:System.Threading.CancellationToken.IsCancellationRequested"/>. Unexpected cancellation, i.e. an
+             <see cref="T:System.OperationCanceledException"/> which occurs without <paramref name="contextCancellationToken"/>
+             requesting cancellation, is treated as an error by this method.</para>
+            
+             <para>This method does not require <see cref="P:System.OperationCanceledException.CancellationToken"/> to match
+             <paramref name="contextCancellationToken"/>, provided cancellation is expected per the previous
+             paragraph.</para>
+             </summary>
+             <param name="contextCancellationToken">A <see cref="T:System.Threading.CancellationToken"/> which will have
+             <see cref="P:System.Threading.CancellationToken.IsCancellationRequested"/> set if cancellation is expected.</param>
+             <returns><see langword="true"/> to catch the exception if the error was reported; otherwise,
+             <see langword="false"/> to propagate the exception if the operation was cancelled.</returns>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.ReportNonFatalError(System.Exception,Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity,System.Boolean)">
+            <summary>
+            Used to report a non-fatal-watson (when possible) to report an exception.  The exception is not caught. Does
+            nothing if no non-fatal error handler is registered.  See the second argument to <see
+            cref="M:Microsoft.CodeAnalysis.ErrorReporting.FatalError.SetHandlers(Microsoft.CodeAnalysis.ErrorReporting.FatalError.ErrorReporterHandler,Microsoft.CodeAnalysis.ErrorReporting.FatalError.ErrorReporterHandler)"/>.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity">
+            <summary>
+            The severity of the error, see the enum members for a description of when to use each. This is metadata that's included
+            in a non-fatal fault report, which we can take advantage of on the backend to automatically triage bugs. For example,
+            a critical severity issue we can open with a lower bug count compared to a low priority one.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity.Uncategorized">
+            <summary>
+            The severity hasn't been categorized. Don't use this in new code.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity.Diagnostic">
+            <summary>
+            Something failed, but the user is unlikely to notice. Especially useful for background things that we can silently recover
+            from, like bugs in caching systems.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity.General">
+            <summary>
+            Something failed, and the user might notice, but they're still likely able to carry on. For example, if the user
+            asked for some information from the IDE (find references, completion, etc.) and we were able to give partial results.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.ErrorReporting.ErrorSeverity.Critical">
+            <summary>
+            Something failed, and the user likely noticed. For example, the user pressed a button to do an action, and
+            we threw an exception so we completely failed to do that in an unrecoverable way. This may also be used
+            for back-end systems where a failure is going to result in a highly broken experience, for example if parsing a file
+            catastrophically failed.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExceptionUtilities.UnexpectedValue(System.Object)">
+            <summary>
+            Creates an <see cref="T:System.InvalidOperationException"/> with information about an unexpected value.
+            </summary>
+            <param name="o">The unexpected value.</param>
+            <returns>The <see cref="T:System.InvalidOperationException"/>, which should be thrown by the caller.</returns>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExceptionUtilities.IsCurrentOperationBeingCancelled(System.Exception,System.Threading.CancellationToken)">
+            <summary>
+            Determine if an exception was an <see cref="T:System.OperationCanceledException"/>, and that the provided token caused the cancellation.
+            </summary>
+            <param name="exception">The exception to test.</param>
+            <param name="cancellationToken">Checked to see if the provided token was cancelled.</param>
+            <returns><see langword="true"/> if the exception was an <see cref="T:System.OperationCanceledException" /> and the token was canceled.</returns>
+        </member>
+        <member name="T:System.Runtime.CompilerServices.OverloadResolutionPriorityAttribute">
+            <summary>
+            Specifies the priority of a member in overload resolution. When unspecified, the default priority is 0.
+            </summary>
+        </member>
+        <member name="M:System.Runtime.CompilerServices.OverloadResolutionPriorityAttribute.#ctor(System.Int32)">
+            <summary>
+            Initializes a new instance of the <see cref="T:System.Runtime.CompilerServices.OverloadResolutionPriorityAttribute"/> class.
+            </summary>
+            <param name="priority">The priority of the attributed member. Higher numbers are prioritized, lower numbers are deprioritized. 0 is the default if no attribute is present.</param>
+        </member>
+        <member name="P:System.Runtime.CompilerServices.OverloadResolutionPriorityAttribute.Priority">
+            <summary>
+            The priority of the member.
+            </summary>
+        </member>
+    </members>
+</doc>

@@ -12,7 +12,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using Microsoft.CodeAnalysis.Text;
-using System.Diagnostics;
 
 namespace Microsoft.CodeAnalysis;
 
@@ -84,7 +83,7 @@ internal static class SystemExplorerRoslynStateTrace
                 ("solution", Id(solution)),
                 ("workspaceSolution", Id(workspaceSolution)),
                 ("selectedSolution", Id(solution)),
-                ("solutionStateContentVersion", solution.SolutionStateContentVersion.ToString()),
+                ("solutionStateContentVersion", Scalar(solution.SolutionStateContentVersion)),
                 ("project", Id(target.ProjectId)),
                 ("tracker", Scalar(tracker.TrackerIdentity)),
                 ("trackerState", tracker.TrackerState),
@@ -123,7 +122,7 @@ internal static class SystemExplorerRoslynStateTrace
                 ("solution", Id(selectedSolution)),
                 ("workspaceSolution", Id(workspaceSolution)),
                 ("selectedSolution", Id(selectedSolution)),
-                ("solutionStateContentVersion", selectedSolution.SolutionStateContentVersion.ToString()),
+                ("solutionStateContentVersion", Scalar(selectedSolution.SolutionStateContentVersion)),
                 ("project", Id(target.ProjectId)),
                 ("tracker", Scalar(tracker.TrackerIdentity)),
                 ("trackerState", tracker.TrackerState),
@@ -229,19 +228,7 @@ internal static class SystemExplorerRoslynStateTrace
     }
 
     private static string Hash(SourceText text)
-    {
-        byte[] bytes = Encoding.UTF8.GetBytes(text.ToString());
-
-        using SHA256 sha256 = SHA256.Create();
-        byte[] hash = sha256.ComputeHash(bytes);
-
-        StringBuilder builder = new StringBuilder(hash.Length * 2);
-
-        foreach (byte value in hash)
-            builder.Append(value.ToString("X2"));
-
-        return builder.ToString();
-    }
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
 
     private static void Write(string eventName, params (string Key, string? Value)[] fields)
     {
@@ -256,10 +243,10 @@ internal static class SystemExplorerRoslynStateTrace
                 if (seq > MaxEvents)
                     return;
 
-                StringBuilder builder = new StringBuilder(Prefix)
+                StringBuilder builder = new(Prefix)
                     .Append("seq=").Append(seq)
                     .Append("|event=").Append(Sanitize(eventName))
-                    .Append("|pid=").Append(Process.GetCurrentProcess().Id)
+                    .Append("|pid=").Append(Environment.ProcessId)
                     .Append("|managedThreadId=").Append(Environment.CurrentManagedThreadId);
 
                 foreach (var (key, value) in fields)
@@ -276,10 +263,10 @@ internal static class SystemExplorerRoslynStateTrace
     }
 
     private static string Sanitize(string value)
-        => value.Replace("|", "_")
-            .Replace("=", "_")
-            .Replace("\r", "_")
-            .Replace("\n", "_");
+        => value.Replace("|", "_", StringComparison.Ordinal)
+            .Replace("=", "_", StringComparison.Ordinal)
+            .Replace("\r", "_", StringComparison.Ordinal)
+            .Replace("\n", "_", StringComparison.Ordinal);
 
     private static string? Id(object? value) => value is null ? null : RuntimeHelpers.GetHashCode(value).ToString();
     private static string? Scalar<T>(T? value) where T : struct => value?.ToString();

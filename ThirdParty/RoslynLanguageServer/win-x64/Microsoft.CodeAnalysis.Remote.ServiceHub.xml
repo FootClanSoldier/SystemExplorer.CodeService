@@ -1,0 +1,693 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Microsoft.CodeAnalysis.Remote.ServiceHub</name>
+    </assembly>
+    <members>
+        <member name="T:Microsoft.CodeAnalysis.Remote.AssetProvider">
+            <summary>
+            This service provide a way to get roslyn objects from checksum
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.AssetProvider.#ctor(Microsoft.CodeAnalysis.Checksum,Microsoft.CodeAnalysis.Remote.SolutionAssetCache,Microsoft.CodeAnalysis.Remote.IAssetSource,Microsoft.CodeAnalysis.Host.SolutionServices)">
+            <summary>
+            This service provide a way to get roslyn objects from checksum
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.AssetProvider.SynchronizeSolutionAssetsAsync(Microsoft.CodeAnalysis.Checksum,System.Threading.CancellationToken)">
+            <summary>
+            This is the function called when we are <em>not</em> doing an incremental update, but are instead doing a bulk
+            full sync.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.IAssetSource">
+            <summary>
+            Provides assets given their checksums.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.IAssetSource.GetAssetsAsync``2(Microsoft.CodeAnalysis.Checksum,Microsoft.CodeAnalysis.Serialization.AssetPath,System.ReadOnlyMemory{Microsoft.CodeAnalysis.Checksum},Microsoft.CodeAnalysis.Serialization.ISerializerService,System.Action{Microsoft.CodeAnalysis.Checksum,``0,``1},``1,System.Threading.CancellationToken)">
+            <param name="callback">Will be called back once per checksum in <paramref name="checksums"/> in the exact order of that array.</param>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Diagnostics.RemoteAnalyzerAssemblyLoaderService">
+            <summary>
+            Customizes the path where to store shadow-copies of analyzer assemblies.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Diagnostics.RemoteAnalyzerPathResolver">
+            <summary>
+            For analyzers shipped in Roslyn, different set of assemblies might be used when running
+            in-proc and OOP e.g. in-proc (VS) running on desktop clr and OOP running on ServiceHub .Net6
+            host. We need to make sure to use the ones from the same location as the remote.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Diagnostics.RemoteAnalyzerPathResolver.#ctor(System.String)">
+            <summary>
+            For analyzers shipped in Roslyn, different set of assemblies might be used when running
+            in-proc and OOP e.g. in-proc (VS) running on desktop clr and OOP running on ServiceHub .Net6
+            host. We need to make sure to use the ones from the same location as the remote.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Diagnostics.PerformanceQueue">
+            <summary>
+            This queue hold onto raw performance data. this type itself is not thread safe. the one who uses this type
+            should take care of that.
+            </summary>
+            <threadsafety static="false" instance="false"/>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.Diagnostics.PerformanceQueue.Snapshot._performanceMap">
+            <summary>
+            Raw performance data. 
+            Keyed by analyzer unique number got from AnalyzerNumberAssigner.
+            Value is delta (TimeSpan - minSpan) among span in this snapshot
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Diagnostics.PerformanceQueue.AnalyzerNumberAssigner">
+            <summary>
+            Assign unique number to diagnostic analyzers
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Diagnostics.PerformanceTrackerService">
+            <summary>
+            Track diagnostic performance 
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteDocumentDifferenceService">
+            <summary>
+            Provide document difference service specific to remote workspace's behavior.
+            
+            Default <see cref="T:Microsoft.CodeAnalysis.SolutionCrawler.AbstractDocumentDifferenceService"/> is optimized for typing case in editor where we have events
+            for each typing. But in remote workspace, we aggregate changes and update solution in bulk and we don't have concept
+            of active file making default implementation unsuitable. Functionally, default one is still correct, but it often
+            time makes us to do more than we need. Basically, it always says this project has semantic change which can cause a
+            lot of re-analysis.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteHostTestData">
+            <summary>
+            Test hook used to pass test data to remote services.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.Host.RemoteServiceBrokerProvider">
+            <summary>
+            Exposes a <see cref="T:Microsoft.ServiceHub.Framework.IServiceBroker"/> to services that expect there to be a global singleton.
+            The first remote service that gets called into will record its broker here.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Host.RemoteServiceBrokerProvider.#ctor">
+            <summary>
+            Exposes a <see cref="T:Microsoft.ServiceHub.Framework.IServiceBroker"/> to services that expect there to be a global singleton.
+            The first remote service that gets called into will record its broker here.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2">
+            <summary>
+            LRU cache of checksum+solution pairs.  Used to keep track of the last few solutions the remote server knows about,
+            helping to avoid unnecessary syncs/recreations of those solutions while many requests are coming into the server.
+            Not threadsafe.  Only use while under a lock.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._maxCapacity">
+            <summary>
+            The max number of solution instances we'll hold onto at a time.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._totalHistory">
+            <summary>
+            The total history kept.  Used to record telemetry about how useful it would be to increase the max capacity.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._cacheHitIndexHistogram">
+            <summary>
+            Keep track of what index we found find a checksum at in the history.  This will help us tell both if the cache
+            is too large, or if it's too small.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._cacheHits">
+            <summary>
+            The number of times we successfully found a solution.  When this happens we'll increment <see
+            cref="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._cacheHitIndexHistogram"/>.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._cacheMissesInHistory">
+            <summary>
+            The number of times we failed to find a solution, but could have found it if we cached more items (up to
+            TotalHistory).  When this happens we'll increment <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._cacheHitIndexHistogram"/>.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._cacheMissesNotInHistory">
+            <summary>
+            The number of times we failed to find a solution, and would not have found it even if we didn't cache more items.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._cacheNodes">
+            <summary>
+            The list of checksum+solution pairs.  Note: only the first <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteSolutionCache`2._maxCapacity"/> items will actually point
+            at a non-null solution.  The ones after that will point at <see langword="null"/>.  We store both so that we can
+            collect useful telemetry on how much benefit we would get by having a larger history.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteWorkspace">
+            <summary>
+            Workspace created by the remote host that mirrors the corresponding client workspace.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._gate">
+            <summary>
+            Guards updates to all mutable state in this workspace.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.UpdatePrimaryBranchSolutionAsync(Microsoft.CodeAnalysis.Remote.AssetProvider,Microsoft.CodeAnalysis.Checksum,System.Threading.CancellationToken)">
+            <summary>
+            Syncs over the solution corresponding to <paramref name="solutionChecksum"/> and sets it as the current
+            solution for <see langword="this"/> workspace.  This will also end up updating <see
+            cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._lastRequestedAnyBranchSolutions"/> and <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._lastRequestedPrimaryBranchSolution"/>, allowing
+            them to be pre-populated for feature requests that come in soon after this call completes.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.RunWithSolutionAsync``1(Microsoft.CodeAnalysis.Remote.AssetProvider,Microsoft.CodeAnalysis.Checksum,System.Func{Microsoft.CodeAnalysis.Solution,System.Threading.Tasks.ValueTask{``0}},System.Threading.CancellationToken)">
+            <summary>
+            Given an appropriate <paramref name="solutionChecksum"/>, gets or computes the corresponding <see
+            cref="T:Microsoft.CodeAnalysis.Solution"/> snapshot for it, and then invokes <paramref name="implementation"/> with that snapshot.  That
+            snapshot and the result of <paramref name="implementation"/> are then returned from this method.  Note: the
+            solution returned is only for legacy cases where we expose OOP to 2nd party clients who expect to be able to
+            call through <see cref="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspaceManager.GetSolutionAsync(Microsoft.ServiceHub.Framework.ServiceBrokerClient,Microsoft.CodeAnalysis.Checksum,System.Threading.CancellationToken)"/> and who expose that statically to
+            themselves.
+            <para>
+            During the life of the call to <paramref name="implementation"/> the solution corresponding to <paramref
+            name="solutionChecksum"/> will be kept alive and returned to any other concurrent calls to this method with
+            the same <paramref name="solutionChecksum"/>.
+            </para>
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.ComputeDisconnectedSolutionAsync(Microsoft.CodeAnalysis.Remote.AssetProvider,Microsoft.CodeAnalysis.Checksum,System.Threading.CancellationToken)">
+            <summary>
+            Create an appropriate <see cref="T:Microsoft.CodeAnalysis.Solution"/> instance corresponding to the <paramref
+            name="newSolutionChecksum"/> passed in.  Note: this method changes no Workspace state and exists purely to
+            compute the corresponding solution.  Updating of our caches, or storing this solution as the <see
+            cref="P:Microsoft.CodeAnalysis.Workspace.CurrentSolution"/> of this <see cref="T:Microsoft.CodeAnalysis.Remote.RemoteWorkspace"/> is the responsibility of any
+            callers.
+            <para>
+            The term 'disconnected' is used to mean that this solution is not assigned to be the current solution of
+            this <see cref="T:Microsoft.CodeAnalysis.Remote.RemoteWorkspace"/>.  It is effectively a fork of that instead.
+            </para>
+            <para>
+            This method will either create the new solution from scratch if it has to.  Or it will attempt to create a
+            fork off of <see cref="P:Microsoft.CodeAnalysis.Workspace.CurrentSolution"/> if possible.  The latter is almost always what will
+            happen (once the first sync completes) as most calls to the remote workspace are using a solution snapshot
+            very close to the primary one, and so can share almost all state with that.
+            </para>
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.UpdateWorkspaceCurrentSolutionAsync(Microsoft.CodeAnalysis.Solution,System.Threading.CancellationToken)">
+            <summary>
+            Updates this workspace with the given <paramref name="newSolution"/>.  The solution returned is the actual
+            one the workspace now points to.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution">
+            <summary>
+            Wrapper around asynchronously produced solution for a particular <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution.SolutionChecksum"/>.  The
+            computation for producing the solution will be canceled when the number of in-flight operations using it
+            goes down to 0.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution._cancellationTokenSource_doNotAccessDirectly">
+            <summary>
+            CancellationTokenSource controlling the execution of <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution._disconnectedSolutionTask"/> and <see
+            cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution._primaryBranchTask"/>.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution._disconnectedSolutionTask">
+            <summary>
+            Background work to just compute the disconnected solution associated with this <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution.SolutionChecksum"/>
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution._primaryBranchTask">
+            <summary>
+            Optional work to try to elevate the solution computed by <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution._disconnectedSolutionTask"/> to be
+            the primary solution of this <see cref="T:Microsoft.CodeAnalysis.Remote.RemoteWorkspace"/>.  Must only be read/written while holding
+            <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._gate"/>.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution.InFlightCount">
+            <summary>
+            Initially set to 1 to represent the operation that requested and is using this solution.  This also
+            allows us to use 0 to represent a point that this solution computation is canceled and can not be
+            used again.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution.TryKickOffPrimaryBranchWork_NoLock(System.Func{Microsoft.CodeAnalysis.Solution,System.Threading.CancellationToken,System.Threading.Tasks.Task{Microsoft.CodeAnalysis.Solution}})">
+            <summary>
+            Allow the RemoteWorkspace to try to elevate this solution to be the primary solution for itself.  This
+            commonly happens because when a change happens to the host, features may kick off immediately, creating
+            the disconnected solution, followed shortly afterwards by a request from the host to make that same
+            checksum be the primary solution of this workspace.
+            </summary>
+            <param name="updatePrimaryBranchAsync"></param>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.InFlightSolution.DecrementInFlightCount_NoLock">
+            <summary>
+            Returns the in-flight solution computations <em>when</em> the in-flight-count is decremented to 0. This
+            allows the caller to wait for those computations to complete (which will hopefully be quickly as they
+            will have just been canceled).  This ensures the caller doesn't return back to the host (potentially
+            unpinning the solution on the host) while the solution-computation tasks are still running and may still
+            attempt to call into the host.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.SolutionCreator">
+            <summary>
+            Create solution for given checksum from base solution
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.SolutionCreator.#ctor(Microsoft.CodeAnalysis.Remote.RemoteWorkspace,Microsoft.CodeAnalysis.Remote.AssetProvider,Microsoft.CodeAnalysis.Solution)">
+            <summary>
+            Create solution for given checksum from base solution
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._lastRequestedPrimaryBranchSolution">
+            <summary>
+            The last solution for the primary branch fetched from the client.  Cached as it's very common to have a
+            flurry of requests for the same checksum that don't run concurrently.  Only read/write while holding <see
+            cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._gate"/>.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._lastRequestedAnyBranchSolutions">
+            <summary>
+            Cache of last N solutions requested by a service.  Cached as it's very common to have a flurry of requests
+            for the same few checksum that don't run concurrently.  Only read/write while holding <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._gate"/>.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._solutionChecksumToSolution">
+            <summary>
+            Mapping from solution-checksum to the solution computed for it.  This is used so that we can hold a solution
+            around as long as the checksum for it is being used in service of some feature operation (e.g.
+            classification).  As long as we're holding onto it, concurrent feature requests for the same solution
+            checksum can share the computation of that particular solution and avoid duplicated concurrent work.  Only
+            read/write while holding <see cref="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspace._gate"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.GetOrCreateSolutionAndAddInFlightCount_NoLock(Microsoft.CodeAnalysis.Remote.AssetProvider,Microsoft.CodeAnalysis.Checksum,System.Boolean)">
+            <summary>
+            Deliberately not cancellable.  This code must always run fully to completion.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspace.AddPinnedSolutionsAsync(System.Collections.Generic.HashSet{Microsoft.CodeAnalysis.Solution},System.Threading.CancellationToken)">
+            <summary>
+            Gets all the solution instances this remote workspace knows about because of the primary solution or any
+            in-flight operations.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteWorkspaceManager">
+            <summary>
+            Manages remote workspaces. Currently supports only a single, primary workspace of kind <see
+            cref="F:Microsoft.CodeAnalysis.WorkspaceKind.RemoteWorkspace"/>. In future it should support workspaces of all kinds.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteWorkspaceManager.s_default">
+            <summary>
+            Default workspace manager used by the product. Tests may specify a custom <see
+            cref="T:Microsoft.CodeAnalysis.Remote.RemoteWorkspaceManager"/> in order to override workspace services.
+            </summary>
+            <remarks>
+            The general thinking behind these timings is that we don't want to be too aggressive constantly waking up
+            and cleaning purging items from the cache.  But we also don't want to wait an excessive amount of time,
+            allowing it to get too full.
+            <para>
+            Also note that the asset cache will not remove items associated with the <see
+            cref="P:Microsoft.CodeAnalysis.Workspace.CurrentSolution"/> of the workspace it is created against (as well as any recent in-flight
+            solutions).  This ensures that the assets associated with the solution that most closely corresponds to what
+            the user is working with will stay pinned on the remote side and not get purged just because the user
+            stopped interactive for a while.  This ensures the next sync (which likely overlaps heavily with the current
+            solution) will not force the same assets to be resent.
+            </para>
+            <list type="bullet">
+            <item>CleanupInterval=30s gives what feels to be a reasonable non-aggressive amount of time to let the cache
+            do its job, while also making sure several times a minute it is scanned for things that can be
+            dropped.</item>
+            <item>PurgeAfter=1m effectively states that an item will be dumped from the cache if not used in the last
+            minute.  This seems reasonable for keeping around all the parts of the current solutions in use, while
+            allowing values from the past, or values removed from the solution to not persist too long.</item>
+            <item>GcAfter=1m means that we'll force some GCs to happen after that amount of time of *non-activity*.  In
+            other words, as long as OOP is being touched for operations, we will avoid doing the GCs.
+            </item>
+            </list>
+            </remarks>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteWorkspaceManager.GetSolutionAsync(Microsoft.ServiceHub.Framework.ServiceBrokerClient,Microsoft.CodeAnalysis.Checksum,System.Threading.CancellationToken)">
+            <summary>
+            Not ideal that we exposing the workspace solution, while not ensuring it stays alive for other calls using
+            the same <paramref name="solutionChecksum"/>). However, this is used by Pythia/Razor/UnitTesting which all
+            assume they can get that solution instance and use as desired by them.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.SolutionAssetCache._remoteWorkspace">
+            <summary>
+            Workspace we are associated with.  When we purge items from the cache, we will avoid any items associated
+            with the items in its 'CurrentSolution'.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.SolutionAssetCache._cleanupIntervalTimeSpan">
+            <summary>
+            Time interval we check storage for cleanup
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.SolutionAssetCache._purgeAfterTimeSpan">
+            <summary>
+            Time span data can sit inside of cache (<see cref="F:Microsoft.CodeAnalysis.Remote.SolutionAssetCache._assets"/>) without being used.
+            after that, it will be removed from the cache.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.SolutionAssetCache.#ctor(Microsoft.CodeAnalysis.Remote.RemoteWorkspace,System.TimeSpan,System.TimeSpan)">
+            <summary>
+            Create central data cache
+            </summary>
+            <param name="cleanupInterval">time interval to clean up</param>
+            <param name="purgeAfter">time unused data can sit in the cache</param>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.TestUtils.GetAssetMapAsync(Microsoft.CodeAnalysis.Solution,Microsoft.CodeAnalysis.ProjectId,System.Threading.CancellationToken)">
+            <summary>
+            create checksum to corresponding object map from solution this map should contain every parts of solution
+            that can be used to re-create the solution back
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.TestUtils.GetAssetMapAsync(Microsoft.CodeAnalysis.Project,System.Threading.CancellationToken)">
+            <summary>
+            create checksum to corresponding object map from project this map should contain every parts of project that
+            can be used to re-create the project back
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteAssetSynchronizationService">
+            <summary>
+            This service is used by the SolutionChecksumUpdater to proactively update the solution snapshot in the
+            out-of-process workspace. We do this to limit the amount of time required to synchronize a solution over after
+            an edit once a feature is asking for a snapshot.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteAssetSynchronizationService.#ctor(Microsoft.CodeAnalysis.Remote.BrokeredServiceBase.ServiceConstructionArguments@)">
+            <summary>
+            This service is used by the SolutionChecksumUpdater to proactively update the solution snapshot in the
+            out-of-process workspace. We do this to limit the amount of time required to synchronize a solution over after
+            an edit once a feature is asking for a snapshot.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.BrokeredServiceBase">
+            <summary>
+            Base type for Roslyn brokered services hosted in ServiceHub.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.BrokeredServiceBase.GetClientOptionsProvider``2(Microsoft.CodeAnalysis.Remote.RemoteCallback{``1},Microsoft.CodeAnalysis.Remote.RemoteServiceCallbackId)">
+            <summary>
+            Use for on-demand retrieval of language-specific options from the client.
+            
+            If the service doesn't know up-front for which languages it will need to retrieve specific options,
+            its ICallback interface should implement <see cref="T:Microsoft.CodeAnalysis.Remote.IRemoteOptionsCallback`1"/> and use this
+            method to create the options provider to be passed to the feature implementation.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteKeepAliveService._sessionIdToCompletionSource">
+            <summary>
+            Mapping from sessionId to the completion source that will be used to signal when that session's solution
+            snapshot is fully hydrated on the OOP (this) side.  The `bool` result of the TaskCompletionSource is unused, and
+            is only there because TaskCompletionSource requires some type on netstandard2.0.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteMissingImportDiscoveryService.SymbolSearchService">
+            <summary>
+            Provides an implementation of the <see cref="T:Microsoft.CodeAnalysis.SymbolSearch.ISymbolSearchService"/> on the remote side so that
+            Add-Import can find results in nuget packages/reference assemblies.  This works
+            by remoting *from* the OOP server back to the host, which can then forward this 
+            appropriately to wherever the real <see cref="T:Microsoft.CodeAnalysis.SymbolSearch.ISymbolSearchService"/> is running.  This is necessary
+            because it's not guaranteed that the real <see cref="T:Microsoft.CodeAnalysis.SymbolSearch.ISymbolSearchService"/> will be running in 
+            the same process that is supplying the <see cref="T:Microsoft.CodeAnalysis.Remote.RemoteMissingImportDiscoveryService"/>.
+            
+            Ideally we would not need to bounce back to the host for this.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteMissingImportDiscoveryService.SymbolSearchService.#ctor(Microsoft.CodeAnalysis.Remote.RemoteCallback{Microsoft.CodeAnalysis.AddImport.IRemoteMissingImportDiscoveryService.ICallback},Microsoft.CodeAnalysis.Remote.RemoteServiceCallbackId)">
+            <summary>
+            Provides an implementation of the <see cref="T:Microsoft.CodeAnalysis.SymbolSearch.ISymbolSearchService"/> on the remote side so that
+            Add-Import can find results in nuget packages/reference assemblies.  This works
+            by remoting *from* the OOP server back to the host, which can then forward this 
+            appropriately to wherever the real <see cref="T:Microsoft.CodeAnalysis.SymbolSearch.ISymbolSearchService"/> is running.  This is necessary
+            because it's not guaranteed that the real <see cref="T:Microsoft.CodeAnalysis.SymbolSearch.ISymbolSearchService"/> will be running in 
+            the same process that is supplying the <see cref="T:Microsoft.CodeAnalysis.Remote.RemoteMissingImportDiscoveryService"/>.
+            
+            Ideally we would not need to bounce back to the host for this.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteProcessTelemetryService.InitializeTelemetrySessionAsync(System.Int32,System.String,System.Boolean,System.Threading.CancellationToken)">
+            <summary>
+            Remote API. Initializes ServiceHub process global state.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteProcessTelemetryService.EnableLoggingAsync(System.Collections.Immutable.ImmutableArray{System.String},System.Collections.Immutable.ImmutableArray{Microsoft.CodeAnalysis.Internal.Log.FunctionId},System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Remote.RemoteProcessTelemetryService.PerformanceReporter">
+            <summary>
+            Track when last time report has sent and send new report if there is update after given internal
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSemanticClassificationService.s_semanticPersistenceName">
+            <summary>
+            Key we use to look this up in the persistence store for a particular document.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSemanticClassificationService.ClassificationFormat">
+            <summary>
+            Our current persistence version.  If we ever change the on-disk format, this should be changed so that we
+            skip over persisted data that we cannot read.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSemanticClassificationService._cachedData">
+            <summary>
+            Cache of the previously requested classified spans for a particular document.  We use this so that during
+            loading, if we're asking about the same documents multiple times by the classification service, we can just
+            return what we have already loaded and not go back to the persistence store to read/decode.
+            <para/>
+            This can be read and updated from different threads.  To keep things safe, we use this object itself
+            as the lock that is taken to serialize access.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.Remote.RemoteSemanticClassificationService._workQueue">
+            <summary>
+            Queue where we place documents we want to compute and cache full semantic classifications for.  Note: the
+            same document may appear multiple times inside of this queue (for different versions of the document).
+            However, we'll only process the last version of any document added.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteSemanticSearchService.CompileQueryAsync(System.String,System.String,System.String,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteSemanticSearchService.DiscardQueryAsync(Microsoft.CodeAnalysis.SemanticSearch.CompiledQueryId,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.RemoteSemanticSearchService.ExecuteQueryAsync(Microsoft.CodeAnalysis.Checksum,Microsoft.CodeAnalysis.Remote.RemoteServiceCallbackId,Microsoft.CodeAnalysis.SemanticSearch.CompiledQueryId,Microsoft.CodeAnalysis.SemanticSearch.QueryExecutionOptions,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.RazorAnalyzerAssemblyResolver.ResolveCore(System.Runtime.Loader.AssemblyLoadContext,System.Reflection.AssemblyName,System.String)">
+            <summary>
+            This will resolve the razor generator assembly specified by <paramref name="assemblyName"/> in the specified
+            <paramref name="compilerLoadContext"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.StartDebuggingSessionAsync(Microsoft.CodeAnalysis.Checksum,Microsoft.CodeAnalysis.Remote.RemoteServiceCallbackId,System.Boolean,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.BreakStateOrCapabilitiesChangedAsync(Microsoft.CodeAnalysis.EditAndContinue.DebuggingSessionId,System.Nullable{System.Boolean},System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.EndDebuggingSessionAsync(Microsoft.CodeAnalysis.EditAndContinue.DebuggingSessionId,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.GetDocumentDiagnosticsAsync(Microsoft.CodeAnalysis.Checksum,Microsoft.CodeAnalysis.Remote.RemoteServiceCallbackId,Microsoft.CodeAnalysis.DocumentId,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.EmitSolutionUpdateAsync(Microsoft.CodeAnalysis.Checksum,Microsoft.CodeAnalysis.Remote.RemoteServiceCallbackId,Microsoft.CodeAnalysis.EditAndContinue.DebuggingSessionId,System.Collections.Immutable.ImmutableDictionary{Microsoft.CodeAnalysis.ProjectId,Microsoft.CodeAnalysis.EditAndContinue.RunningProjectOptions},System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.CommitSolutionUpdateAsync(Microsoft.CodeAnalysis.EditAndContinue.DebuggingSessionId,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.DiscardSolutionUpdateAsync(Microsoft.CodeAnalysis.EditAndContinue.DebuggingSessionId,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.GetBaseActiveStatementSpansAsync(Microsoft.CodeAnalysis.Checksum,Microsoft.CodeAnalysis.EditAndContinue.DebuggingSessionId,System.Collections.Immutable.ImmutableArray{Microsoft.CodeAnalysis.DocumentId},System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.GetAdjustedActiveStatementSpansAsync(Microsoft.CodeAnalysis.Checksum,Microsoft.CodeAnalysis.Remote.RemoteServiceCallbackId,Microsoft.CodeAnalysis.EditAndContinue.DebuggingSessionId,Microsoft.CodeAnalysis.DocumentId,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.EditAndContinue.RemoteEditAndContinueService.SetFileLoggingDirectoryAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+            Remote API.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.Host.RemoteWorkspaceConfigurationService.Options">
+            <summary>
+            Returns default values until the options are initialized.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.UnusedReferences.ProjectAssets.ProjectAssetsFileReader.ReadReferencesAsync(System.Collections.Immutable.ImmutableArray{Microsoft.CodeAnalysis.UnusedReferences.ReferenceInfo},System.String)">
+            <summary>
+            Enhances references with the assemblies they bring into the compilation and their dependency hierarchy.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.ErrorReporting.FaultReporter.CustomFaultDescriptionPropertyName">
+            <summary>
+            We can no longer use the common fault description property as it has to be suppressed due to poisoned data in past releases.
+            This means that prism will no longer show the fault description either.  We'll store the clean description in a custom
+            property so we can access it manually if needed.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.ErrorReporting.FaultReporter.P4ModuleNameDefaultIndex">
+            <summary>
+            The bucket parameter for the blamed module.
+            </summary>
+        </member>
+        <member name="F:Microsoft.CodeAnalysis.ErrorReporting.FaultReporter.P5MethodNameDefaultIndex">
+            <summary>
+            The bucket parameter for the blamed method.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ErrorReporting.FaultReporter.ReportFault(System.Exception,Microsoft.VisualStudio.Telemetry.FaultSeverity,System.Boolean)">
+            <summary>
+            Report Non-Fatal Watson for a given unhandled exception.
+            </summary>
+            <param name="exception">Exception that triggered this non-fatal error</param>
+            <param name="forceDump">Force a dump to be created, even if the telemetry system is not
+            requesting one; we will still do a client-side limit to avoid sending too much at once.</param>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Telemetry.AbstractAggregatingLog`2">
+            <summary>
+            Provides a wrapper around various VSTelemetry aggregating APIs to support aggregated telemetry. Each instance
+            of this class corresponds to a specific FunctionId operation and can support aggregated values for each
+            metric name logged.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Telemetry.AbstractAggregatingLog`2.#ctor(Microsoft.VisualStudio.Telemetry.TelemetrySession,Microsoft.CodeAnalysis.Internal.Log.FunctionId)">
+            <summary>
+            Creates a new aggregating telemetry log
+            </summary>
+            <param name="session">Telemetry session used to post events</param>
+            <param name="functionId">Used to derive meter name</param>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Telemetry.AbstractAggregatingLog`2.Log(Microsoft.CodeAnalysis.Internal.Log.KeyValueLogMessage)">
+            <summary>
+            Adds aggregated information for the metric and value passed in via <paramref name="logMessage"/>. The Name/Value properties
+            are used as the metric name and value to record.
+            </summary>
+            <param name="logMessage"></param>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Telemetry.AggregatingCounterLog">
+            <summary>
+            Provides a wrapper around the VSTelemetry counter APIs to support aggregated counter telemetry. Each instance
+            of this class corresponds to a specific FunctionId operation and can support counting aggregated values for each
+            metric name logged.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Telemetry.AggregatingHistogramLog">
+            <summary>
+            Provides a wrapper around the VSTelemetry histogram APIs to support aggregated telemetry. Each instance
+            of this class corresponds to a specific FunctionId operation and can support aggregated values for each
+            metric name logged.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Telemetry.AggregatingHistogramLog.#ctor(Microsoft.VisualStudio.Telemetry.TelemetrySession,Microsoft.CodeAnalysis.Internal.Log.FunctionId,System.Double[])">
+            <summary>
+            Creates a new aggregating telemetry log
+            </summary>
+            <param name="session">Telemetry session used to post events</param>
+            <param name="functionId">Used to derive meter name</param>
+            <param name="bucketBoundaries">Optional values indicating bucket boundaries in milliseconds. If not specified, 
+            all histograms created will use the default histogram configuration</param>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.Telemetry.TimedTelemetryLogBlock">
+            <summary>
+            Provides a mechanism to log telemetry information containing the execution time between
+            creation and disposal of this object.
+            </summary>
+        </member>
+        <member name="T:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider">
+            <summary>
+            Provides access to an appropriate <see cref="T:Microsoft.CodeAnalysis.Telemetry.ITelemetryLogProvider"/> for logging telemetry.
+            </summary>
+        </member>
+        <member name="F:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider._logs">
+            <summary>
+            Manages instances of <see cref="T:Microsoft.VisualStudio.LanguageServices.Telemetry.VisualStudioTelemetryLog"/> to provide in <see cref="M:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider.GetLog(Microsoft.CodeAnalysis.Internal.Log.FunctionId)"/>
+            </summary>
+        </member>
+        <member name="F:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider._histogramLogs">
+            <summary>
+            Manages instances of <see cref="T:Microsoft.CodeAnalysis.Telemetry.AggregatingHistogramLog"/> to provide in <see cref="M:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider.GetHistogramLog(Microsoft.CodeAnalysis.Internal.Log.FunctionId,System.Double[])"/>
+            </summary>
+        </member>
+        <member name="F:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider._counterLogs">
+            <summary>
+            Manages instances of <see cref="T:Microsoft.CodeAnalysis.Telemetry.AggregatingCounterLog"/> to provide in <see cref="M:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider.GetCounterLog(Microsoft.CodeAnalysis.Internal.Log.FunctionId)"/>
+            </summary>
+        </member>
+        <member name="M:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider.GetLog(Microsoft.CodeAnalysis.Internal.Log.FunctionId)">
+            <summary>
+            Returns an <see cref="T:Microsoft.CodeAnalysis.Telemetry.ITelemetryLog"/> for logging telemetry.
+            </summary>
+        </member>
+        <member name="M:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider.GetHistogramLog(Microsoft.CodeAnalysis.Internal.Log.FunctionId,System.Double[])">
+            <summary>
+            Returns an aggregating <see cref="T:Microsoft.CodeAnalysis.Telemetry.ITelemetryLog"/> for logging telemetry.
+            </summary>
+        </member>
+        <member name="M:Microsoft.VisualStudio.LanguageServices.Telemetry.TelemetryLogProvider.Flush">
+            <summary>
+            Flushes all telemetry logs
+            </summary>
+        </member>
+        <member name="M:Microsoft.VisualStudio.LanguageServices.Storage.FileDownloader.ReadFileAsync">
+            <summary>
+            The netcore version of <see cref="T:Microsoft.VisualStudio.RemoteControl.RemoteControlClient"/> doesn't support ReturnStale.  It will download the file
+            (on a separate thread), but then not cache it because it doesn't have access to the normal IE component that
+            does proper header reading/caching.  Then, when we call in to read the file, we get nothing back, since nothing
+            was cached.
+            <para/> The temporary solution to this is to force the download to happen.  This is not ideal as we will no
+            longer be respecting the server "Cache-Control:Max-Age" header.  Which means we'll continually download the
+            files, even if not needed (since the server says to use the local value).  This is not great, but is not
+            terrible either.  First, we will only download the full DB file <em>once</em>, when it is actually missing on
+            the user's machine.  From that point on, we'll only be querying the server for the delta-patch file for the DB
+            version we have locally.  The vast majority of the time that is a tiny document of the form <c><![CDATA[<Patch
+            upToDate="true" FileVersion="105" ChangesetId="1CBE1453" />]]></c> (around 70 bytes) which simply tells the user
+            they are up to date.  Only about once every three months will they actually download a large patch file.  Also,
+            this patch download will only happen once a day tops (as that is our cadence for checking if there are new index
+            versions out).
+            <para/> https://github.com/dotnet/roslyn/issues/71014 tracks this issue.  Once RemoteControlClient is updated to
+            support this again, we can remove this specialized code for netcore.
+            </summary>
+        </member>
+    </members>
+</doc>

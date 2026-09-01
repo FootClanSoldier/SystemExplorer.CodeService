@@ -1,0 +1,88 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Microsoft.VisualStudioCode.RazorExtension</name>
+    </assembly>
+    <members>
+        <member name="T:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.CohostDocSyncEndpointRegistration">
+            <summary>
+            This class provides dynamic registration for Razor files, for LSP methods where the endpoint implementation
+            is provided by Roslyn
+            </summary>
+        </member>
+        <member name="M:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.CohostDocumentCompletionEndpoint.GetHtmlCompletionListAsync(Roslyn.LanguageServer.Protocol.RazorVSInternalCompletionParams,Microsoft.CodeAnalysis.TextDocument,Microsoft.CodeAnalysis.Razor.Completion.RazorCompletionOptions,System.Guid,System.Threading.CancellationToken)">
+            <summary>
+            Fetches HTML completions from the external HTML language server via LSP.
+            Used as a fallback when the local HTML completion provider cannot handle the context
+            (e.g., script/style content, CSS class intellisense).
+            </summary>
+        </member>
+        <member name="T:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.SynchronizationResult">
+            <summary>
+            A result of a synchronization operation for a Html document
+            </summary>
+            <remarks>
+            If <see cref="P:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.SynchronizationResult.Synchronized" /> is <see langword="false" />, <see cref="P:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.SynchronizationResult.Checksum" /> will be <see langword="default" />.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.SynchronizationResult.#ctor(System.Boolean,Microsoft.CodeAnalysis.Checksum)">
+            <summary>
+            A result of a synchronization operation for a Html document
+            </summary>
+            <remarks>
+            If <see cref="P:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.SynchronizationResult.Synchronized" /> is <see langword="false" />, <see cref="P:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.SynchronizationResult.Checksum" /> will be <see langword="default" />.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.HtmlDocumentSynchronizer.GetSynchronizationRequestTaskAsync(Microsoft.CodeAnalysis.TextDocument,Microsoft.VisualStudio.Razor.LanguageClient.Cohost.HtmlDocumentSynchronizer.RazorDocumentVersion,System.Threading.CancellationToken)">
+            <summary>
+            Returns a task that will complete when the html document for the Razor document has been made available
+            </summary>
+            <remarks>
+            Whilst this is a task-returning method, really its not is to manage the <see cref="F:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.HtmlDocumentSynchronizer._synchronizationRequests" /> dictionary.
+            When this method is called, one of 3 things could happen:
+            <list type="number">
+            <item>Nobody has asked for that document before, or they asked but the task failed, so a new task is started and returned</item>
+            <item>Somebody else already asked for that document, so you get the task they were given</item>
+            <item>Somebody else already asked for a future version of that document, so you get nothing</item>
+            </list>
+            If option 1 is taken, any pending tasks for older versions of the document will be cancelled.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.VisualStudio.Razor.LanguageClient.Cohost.IRazorSemanticTokensRefreshQueue.Initialize(Roslyn.LanguageServer.Protocol.VSInternalClientCapabilities)">
+            <summary>
+            Initialize the semantic tokens refresh queue in Roslyn
+            </summary>
+            <remarks>
+            This MUST be called synchronously from an IOnInitialized handler, to avoid dual initialization when
+            Roslyn and Razor both support semantic tokens
+            </remarks>
+        </member>
+        <member name="T:Microsoft.VisualStudioCode.RazorExtension.Services.InProcServiceFactory">
+            <summary>
+             Creates Razor brokered services.
+            </summary>
+            <remarks>
+             This class holds <see cref="T:Microsoft.CodeAnalysis.Remote.Razor.RazorBrokeredServiceBase.FactoryBase`1"/> instances in a static
+             field. This should work fine in tests, since brokered service factories are intended to be stateless.
+             However, if a factory is introduced that maintains state, this class will need to be revisited to
+             avoid holding onto state across tests.
+            </remarks>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Remote.Razor.RazorAnalyzerAssemblyResolver.ResolveCore(System.Runtime.Loader.AssemblyLoadContext,System.Reflection.AssemblyName,System.String)">
+            <summary>
+            This will resolve the razor generator assembly specified by <paramref name="assemblyName"/> in the specified
+            <paramref name="compilerLoadContext"/>.
+            </summary>
+        </member>
+        <member name="T:Microsoft.AspNetCore.Razor.LanguageServer.LspLogger">
+            <summary>
+            ILogger implementation that logs via the window/logMessage LSP method.
+            </summary>
+        </member>
+        <member name="M:Microsoft.AspNetCore.Razor.LanguageServer.LspLogger.#ctor(System.String,Microsoft.AspNetCore.Razor.LanguageServer.RazorClientServerManagerProvider)">
+            <summary>
+            ILogger implementation that logs via the window/logMessage LSP method.
+            </summary>
+        </member>
+    </members>
+</doc>

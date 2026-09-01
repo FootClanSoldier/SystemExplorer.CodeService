@@ -20,11 +20,18 @@
     <ToolCommandName>system-explorer-code</ToolCommandName>
     <PackageOutputPath>$(MSBuildProjectDirectory)/nupkg</PackageOutputPath>
 
+    <PrivateRoslynRuntimeSourceDirectory>$(MSBuildProjectDirectory)/ThirdParty/RoslynLanguageServer/win-x64</PrivateRoslynRuntimeSourceDirectory>
+    <PrivateRoslynServerDll>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.dll</PrivateRoslynServerDll>
+    <PrivateRoslynDepsJson>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.deps.json</PrivateRoslynDepsJson>
+    <PrivateRoslynRuntimeConfigJson>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json</PrivateRoslynRuntimeConfigJson>
+    <PrivateRoslynServerDllSha256>4012B886966A1384E2371186E7C38AA5AF8ED26072DBBD5CA739F2C4470A7467</PrivateRoslynServerDllSha256>
+
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="StreamJsonRpc" Version="2.25.29" />
   </ItemGroup>
 
   <ItemGroup>
@@ -33,7 +40,45 @@
 
   <ItemGroup>
     <None Update="README.md" Pack="true" PackagePath="\" />
+    <None Remove="ThirdParty/RoslynLanguageServer/**/*" />
+    <None Include="ThirdParty/RoslynLanguageServer/win-x64/**/*"
+          Pack="true"
+          PackagePath="tools/$(TargetFramework)/any/roslyn/win-x64/%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="ThirdParty/RoslynLanguageServer/PROVENANCE.txt"
+          Pack="true"
+          PackagePath="tools/$(TargetFramework)/any/roslyn/PROVENANCE.txt" />
+    <None Include="ThirdParty/RoslynLanguageServer/LICENSE.txt"
+          Pack="true"
+          PackagePath="tools/$(TargetFramework)/any/roslyn/LICENSE.txt" />
+    <None Include="ThirdParty/RoslynLanguageServer/ThirdPartyNotices.rtf"
+          Pack="true"
+          PackagePath="tools/$(TargetFramework)/any/roslyn/ThirdPartyNotices.rtf" />
     <Folder Include="nupkg\" />
   </ItemGroup>
+
+  <Target Name="ValidatePrivateRoslynRuntimeForPack" BeforeTargets="Pack">
+    <Error Condition="!Exists('$(PrivateRoslynServerDll)')"
+           Text="Private Roslyn runtime is missing Microsoft.CodeAnalysis.LanguageServer.dll." />
+    <Error Condition="!Exists('$(PrivateRoslynDepsJson)')"
+           Text="Private Roslyn runtime is missing Microsoft.CodeAnalysis.LanguageServer.deps.json." />
+    <Error Condition="!Exists('$(PrivateRoslynRuntimeConfigJson)')"
+           Text="Private Roslyn runtime is missing Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json." />
+
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/ThirdParty/RoslynLanguageServer/PROVENANCE.txt')"
+           Text="Private Roslyn runtime provenance file is missing." />
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/ThirdParty/RoslynLanguageServer/LICENSE.txt')"
+           Text="Pinned Roslyn redistribution license file is missing." />
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/ThirdParty/RoslynLanguageServer/ThirdPartyNotices.rtf')"
+           Text="Pinned Roslyn NuGet third-party notices file is missing." />
+
+    <GetFileHash Files="$(PrivateRoslynServerDll)"
+                 Algorithm="SHA256"
+                 Condition="Exists('$(PrivateRoslynServerDll)')">
+      <Output TaskParameter="Items" ItemName="_PrivateRoslynServerHash" />
+    </GetFileHash>
+
+    <Error Condition="Exists('$(PrivateRoslynServerDll)') and '@(_PrivateRoslynServerHash->'%(FileHash)')' != '$(PrivateRoslynServerDllSha256)'"
+           Text="Private Roslyn Language Server DLL SHA-256 mismatch. Expected $(PrivateRoslynServerDllSha256), actual @(_PrivateRoslynServerHash->'%(FileHash)')." />
+  </Target>
 
 </Project>

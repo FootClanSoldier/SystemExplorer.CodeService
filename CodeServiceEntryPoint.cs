@@ -8,6 +8,7 @@ internal static class CodeServiceEntryPoint
     private const int OwnerValidationFailureExitCode = 3;
     private const int LocalTransportStartupFailureExitCode = 4;
     private const int SessionStartupFailureExitCode = 5;
+    private const int RoslynRuntimeProvisioningFailureExitCode = 6;
 
     private static async Task<int> Main(string[] args)
     {
@@ -37,6 +38,8 @@ internal static class CodeServiceEntryPoint
                         => LocalTransportStartupFailureExitCode,
                     CodeServiceHostCreationFailureKind.SessionStartupFailure
                         => SessionStartupFailureExitCode,
+                    CodeServiceHostCreationFailureKind.RoslynRuntimeProvisioningFailure
+                        => RoslynRuntimeProvisioningFailureExitCode,
                     _ => FatalFailureExitCode,
                 };
             }

@@ -1,0 +1,189 @@
+From 405fb7f98607fbfb312825fd4bcc789e098eae16 Mon Sep 17 00:00:00 2001
+From: FootClanSoldier
+Date: Sun, 30 Aug 2026 11:56:20 +0200
+Subject: [PATCH] Fix semantic model reuse after cross-document semantic
+ changes
+
+---
+ .../SemanticModelReuseTests.cs                | 114 ++++++++++++++++++
+ ...ceFactory.SemanticModelWorkspaceService.cs |  20 +--
+ 2 files changed, 126 insertions(+), 8 deletions(-)
+
+diff --git a/src/Workspaces/CoreTest/SemanticModelReuse/SemanticModelReuseTests.cs b/src/Workspaces/CoreTest/SemanticModelReuse/SemanticModelReuseTests.cs
+index c07740e7f44..9e79ad95008 100644
+--- a/src/Workspaces/CoreTest/SemanticModelReuse/SemanticModelReuseTests.cs
++++ b/src/Workspaces/CoreTest/SemanticModelReuse/SemanticModelReuseTests.cs
+@@ -78,6 +78,120 @@ public async Task SameSyntaxTreeReturnsNonSpeculativeModel_CSharp()
+         Assert.Equal(model1, actualModel);
+     }
+ 
++[Fact]
++public async Task CrossDocumentTopLevelEditShouldProduceFreshModel_CSharp()
++{
++    var consumerSource = """
++        class Consumer
++        {
++            void M(ProbeTarget target)
++            {
++                _ = target;
++            }
++        }
++        """;
++
++    var targetV1Source = """
++        class ProbeTarget
++        {
++            public int ProbeDiskMember { get; }
++        }
++        """;
++
++    var targetV2Source = """
++        class ProbeTarget
++        {
++            public int ProbeUnsavedMember { get; }
++        }
++        """;
++
++    var consumerSeed = CreateDocument(consumerSource, LanguageNames.CSharp);
++    var consumerId = consumerSeed.Id;
++
++    var targetV1 = consumerSeed.Project.AddDocument(
++        "Target.cs",
++        SourceText.From(targetV1Source));
++
++    var consumerV1 = targetV1.Project.GetDocument(consumerId);
++    Assert.NotNull(consumerV1);
++
++    var position = consumerSource.IndexOf("target;");
++
++    // Prime the workspace semantic-model reuse map from v1.
++    var reusedModelV1 = await consumerV1.ReuseExistingSpeculativeModelAsync(
++        position,
++        CancellationToken.None);
++
++    Assert.False(reusedModelV1.IsSpeculativeSemanticModel);
++
++    var consumerTreeV1 = await consumerV1.GetSyntaxTreeAsync();
++    var semanticVersionV1 = await consumerV1.Project.GetDependentSemanticVersionAsync(
++        CancellationToken.None);
++
++    // Change only Target. Consumer source/tree remains untouched.
++    var targetV2 = targetV1.WithText(SourceText.From(targetV2Source));
++    var consumerV2 = targetV2.Project.GetDocument(consumerId);
++    Assert.NotNull(consumerV2);
++
++    var consumerTreeV2 = await consumerV2.GetSyntaxTreeAsync();
++    var semanticVersionV2 = await consumerV2.Project.GetDependentSemanticVersionAsync(
++        CancellationToken.None);
++
++    // Consumer itself was not changed, so its SyntaxTree object should be retained.
++    Assert.Same(consumerTreeV1, consumerTreeV2);
++
++    // The project semantic world did change because Target changed at top level.
++    Assert.NotEqual(semanticVersionV1, semanticVersionV2);
++
++    // Materialize and verify the current v2 compilation/model.
++    var currentCompilationV2 = await consumerV2.Project.GetCompilationAsync(
++        CancellationToken.None);
++
++    Assert.NotNull(currentCompilationV2);
++
++    var currentModelV2 = await consumerV2.GetSemanticModelAsync(
++        CancellationToken.None);
++
++    Assert.NotNull(currentModelV2);
++    Assert.Same(currentCompilationV2, currentModelV2.Compilation);
++
++    // Ask the semantic-model reuse service for Consumer again.
++    var reusedModelV2 = await consumerV2.ReuseExistingSpeculativeModelAsync(
++        position,
++        CancellationToken.None);
++
++    // After a cross-document top-level semantic change, reuse must return
++    // a fresh semantic model rooted in the current v2 compilation.
++    Assert.False(reusedModelV2.IsSpeculativeSemanticModel);
++    Assert.NotSame(reusedModelV1, reusedModelV2);
++    Assert.Same(currentCompilationV2, reusedModelV2.Compilation);
++
++    var reusedProbeTarget =
++        reusedModelV2.Compilation.GetTypeByMetadataName("ProbeTarget");
++
++    var currentProbeTarget =
++        currentCompilationV2.GetTypeByMetadataName("ProbeTarget");
++
++    Assert.NotNull(reusedProbeTarget);
++    Assert.NotNull(currentProbeTarget);
++
++    Assert.Contains(
++        reusedProbeTarget.GetMembers(),
++        member => member.Name == "ProbeUnsavedMember");
++
++    Assert.DoesNotContain(
++        reusedProbeTarget.GetMembers(),
++        member => member.Name == "ProbeDiskMember");
++
++    Assert.Contains(
++        currentProbeTarget.GetMembers(),
++        member => member.Name == "ProbeUnsavedMember");
++
++    Assert.DoesNotContain(
++        currentProbeTarget.GetMembers(),
++        member => member.Name == "ProbeDiskMember");
++}
++
+     [Fact]
+     public async Task InBodyEditShouldProduceCachedModel_CSharp()
+     {
+diff --git a/src/Workspaces/SharedUtilitiesAndExtensions/Workspace/Core/SemanticModelReuse/SemanticModelWorkspaceServiceFactory.SemanticModelWorkspaceService.cs b/src/Workspaces/SharedUtilitiesAndExtensions/Workspace/Core/SemanticModelReuse/SemanticModelWorkspaceServiceFactory.SemanticModelWorkspaceService.cs
+index 1d0d7da118c..bcc664f2191 100644
+--- a/src/Workspaces/SharedUtilitiesAndExtensions/Workspace/Core/SemanticModelReuse/SemanticModelWorkspaceServiceFactory.SemanticModelWorkspaceService.cs
++++ b/src/Workspaces/SharedUtilitiesAndExtensions/Workspace/Core/SemanticModelReuse/SemanticModelWorkspaceServiceFactory.SemanticModelWorkspaceService.cs
+@@ -112,17 +112,22 @@ public async ValueTask<SemanticModel> ReuseExistingSpeculativeModelAsync(Documen
+             // next caller (which is likely to use the same body node).
+             var originalMap = _semanticModelMap;
+ 
++            var topLevelSemanticVersion = await document.Project.GetDependentSemanticVersionAsync(cancellationToken).ConfigureAwait(false);
++
+             // If we already have a cached *real* semantic model for this body, then just provide that. Note: this
+             // is also a requirement as you cannot speculate on a semantic model using a node from that same
+-            // semantic model.
++            // semantic model. However, an unchanged document syntax tree can still belong to a project whose other
++            // documents have changed top-level semantics, so the cached semantic version must also match.
+             if (originalMap.TryGetValue(document.Id, out var reuseInfoOpt) &&
+                 reuseInfoOpt.HasValue &&
++                reuseInfoOpt.Value.TopLevelSemanticVersion == topLevelSemanticVersion &&
+                 reuseInfoOpt.Value.PreviousNonSpeculativeSemanticModel.SyntaxTree == bodyNode.SyntaxTree)
+             {
+                 return reuseInfoOpt.Value.PreviousNonSpeculativeSemanticModel;
+             }
+ 
+-            var updatedMap = await ComputeUpdatedMapAsync(originalMap, document, bodyNode, cancellationToken).ConfigureAwait(false);
++            var updatedMap = await ComputeUpdatedMapAsync(
++                originalMap, document, bodyNode, topLevelSemanticVersion, cancellationToken).ConfigureAwait(false);
+ 
+             // Grab the resultant semantic model and then overwrite the existing map.  We return the semantic model
+             // from the map *we* computed so that we're isolated from other threads writing to the map stored in the
+@@ -135,15 +140,14 @@ public async ValueTask<SemanticModel> ReuseExistingSpeculativeModelAsync(Documen
+         }
+ 
+         private static async Task<ImmutableDictionary<DocumentId, SemanticModelReuseInfo?>> ComputeUpdatedMapAsync(
+-            ImmutableDictionary<DocumentId, SemanticModelReuseInfo?> map, Document document, SyntaxNode bodyNode, CancellationToken cancellationToken)
++            ImmutableDictionary<DocumentId, SemanticModelReuseInfo?> map,
++            Document document,
++            SyntaxNode bodyNode,
++            VersionStamp topLevelSemanticVersion,
++            CancellationToken cancellationToken)
+         {
+             var linkedIds = document.GetLinkedDocumentIds();
+ 
+-            // Get the current top level version for this document's project.  If it has changed, then we cannot
+-            // reuse any existing cached data for it.  This also ensures that we can do things like find the same
+-            // method body node prior to an edit just by counting it's top-level index in the file.
+-            var topLevelSemanticVersion = await document.Project.GetDependentSemanticVersionAsync(cancellationToken).ConfigureAwait(false);
+-
+             // If we are able to reuse a semantic model, then ensure that this is now the semantic model we're now
+             // pointing at for this document.
+             var reuseInfo = await TryReuseCachedSemanticModelAsync(
+-- 
+2.55.0.windows.3
+

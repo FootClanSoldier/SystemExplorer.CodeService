@@ -10,6 +10,8 @@ internal sealed class WorkspaceDirtyIntent
 
     public bool ForceFullSourceValidation { get; private set; }
 
+    public bool ForceRoslynProjectReload { get; private set; }
+
     public long HighestDirtyVersion { get; private set; }
 
     // Number of accepted observer callbacks coalesced into the pending batch.
@@ -19,12 +21,14 @@ internal sealed class WorkspaceDirtyIntent
     public void Mark(
         long dirtyVersion,
         bool forceFullSourceValidation,
+        bool forceRoslynProjectReload,
         string? sourceRelativePath,
         string? secondarySourceRelativePath)
     {
         IsDirty = true;
         HighestDirtyVersion = dirtyVersion;
         SignalCount = SignalCount == int.MaxValue ? int.MaxValue : SignalCount + 1;
+        ForceRoslynProjectReload |= forceRoslynProjectReload;
 
         if (ForceFullSourceValidation || forceFullSourceValidation)
         {
@@ -53,7 +57,8 @@ internal sealed class WorkspaceDirtyIntent
             SignalCount,
             new ProjectIndexReconciliationHints(
                 ForceFullSourceValidation,
-                sourcePaths));
+                sourcePaths),
+            ForceRoslynProjectReload);
 
         Clear();
         return batch;
@@ -63,6 +68,7 @@ internal sealed class WorkspaceDirtyIntent
     {
         IsDirty = false;
         ForceFullSourceValidation = false;
+        ForceRoslynProjectReload = false;
         HighestDirtyVersion = 0;
         SignalCount = 0;
         _sourcePaths.Clear();
@@ -94,4 +100,5 @@ internal sealed class WorkspaceDirtyIntent
 internal readonly record struct WorkspaceDirtyBatch(
     long DirtyVersion,
     int DirtySignalCount,
-    ProjectIndexReconciliationHints ReconciliationHints);
+    ProjectIndexReconciliationHints ReconciliationHints,
+    bool ForceRoslynProjectReload);

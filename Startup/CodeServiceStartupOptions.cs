@@ -13,15 +13,18 @@ internal sealed class CodeServiceStartupOptions
     private const string GodotProcessIdOption = "--godot-pid";
     private const string GodotStartTimeUtcTicksOption = "--godot-start-time-utc-ticks";
     private const string DiagnosticLogOption = "--diagnostic-log";
+    private const string RoslynRuntimeOption = "--roslyn-runtime";
 
     private CodeServiceStartupOptions(
         CodeServiceStartupMode mode,
         GodotProcessIdentity godotOwnerIdentity,
-        bool diagnosticLoggingEnabled)
+        bool diagnosticLoggingEnabled,
+        RoslynLanguageServerRuntime? roslynRuntime)
     {
         Mode = mode;
         GodotOwnerIdentity = godotOwnerIdentity;
         DiagnosticLoggingEnabled = diagnosticLoggingEnabled;
+        RoslynRuntime = roslynRuntime;
     }
 
     public CodeServiceStartupMode Mode { get; }
@@ -29,6 +32,8 @@ internal sealed class CodeServiceStartupOptions
     public GodotProcessIdentity GodotOwnerIdentity { get; }
 
     public bool DiagnosticLoggingEnabled { get; }
+
+    public RoslynLanguageServerRuntime? RoslynRuntime { get; }
 
     public static CodeServiceStartupOptionsParseResult TryParse(string[] args)
     {
@@ -47,6 +52,8 @@ internal sealed class CodeServiceStartupOptions
         int? godotProcessId = null;
         long? godotStartTimeUtcTicks = null;
         bool diagnosticLoggingEnabled = false;
+        RoslynLanguageServerRuntime? roslynRuntime = null;
+        bool roslynRuntimeSpecified = false;
 
         int index = 1;
         while (index < args.Length)
@@ -127,6 +134,37 @@ internal sealed class CodeServiceStartupOptions
                     diagnosticLoggingEnabled = true;
                     break;
 
+                case RoslynRuntimeOption:
+                    if (roslynRuntimeSpecified)
+                    {
+                        return CodeServiceStartupOptionsParseResult.Failure(
+                            $"duplicate option '{RoslynRuntimeOption}'.");
+                    }
+
+                    roslynRuntimeSpecified = true;
+                    if (!TryReadOptionValue(
+                            args,
+                            ref index,
+                            option,
+                            out string runtimeDirectory,
+                            out string? runtimeError))
+                    {
+                        return CodeServiceStartupOptionsParseResult.Failure(runtimeError!);
+                    }
+
+                    RoslynLanguageServerRuntimeValidationResult runtimeValidation =
+                        RoslynLanguageServerRuntime.TryValidate(
+                            runtimeDirectory,
+                            RoslynLanguageServerRuntimeSource.ExplicitOverride);
+                    if (!runtimeValidation.IsSuccess)
+                    {
+                        return CodeServiceStartupOptionsParseResult.Failure(
+                            $"option '{RoslynRuntimeOption}' is invalid: {runtimeValidation.ErrorMessage}");
+                    }
+
+                    roslynRuntime = runtimeValidation.Runtime;
+                    break;
+
                 default:
                     return CodeServiceStartupOptionsParseResult.Failure(
                         $"unknown option '{option}'.");
@@ -155,7 +193,8 @@ internal sealed class CodeServiceStartupOptions
             new CodeServiceStartupOptions(
                 CodeServiceStartupMode.Server,
                 ownerIdentity,
-                diagnosticLoggingEnabled));
+                diagnosticLoggingEnabled,
+                roslynRuntime));
     }
 
     private static bool TryReadOptionValue(

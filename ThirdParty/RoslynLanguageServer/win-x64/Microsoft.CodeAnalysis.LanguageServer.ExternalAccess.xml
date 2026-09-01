@@ -1,0 +1,268 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Microsoft.CodeAnalysis.LanguageServer.ExternalAccess</name>
+    </assembly>
+    <members>
+        <member name="T:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.AbstractCopilotLspServiceDocumentRequestHandler`2">
+            <inheritdoc cref="T:Microsoft.CodeAnalysis.LanguageServer.Handler.ILspServiceDocumentRequestHandler`2"/>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.CopilotRequestContext">
+            <summary>
+            Context for requests handled by <see cref="T:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.AbstractCopilotLspServiceDocumentRequestHandler`2"/>
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.CopilotRequestContext.#ctor(Microsoft.CodeAnalysis.LanguageServer.Handler.RequestContext)">
+            <summary>
+            Context for requests handled by <see cref="T:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.AbstractCopilotLspServiceDocumentRequestHandler`2"/>
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.CopilotRequestContext.Solution">
+            <summary>
+            The solution state that the request should operate on.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.CopilotRequestContext.Document">
+            <inheritdoc cref="P:Microsoft.CodeAnalysis.LanguageServer.Handler.RequestContext.Document"/>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.CopilotMethodAttribute">
+            <summary>
+            An attribute which identifies the method which a Copilot request handler like
+            <see cref="T:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.AbstractCopilotLspServiceDocumentRequestHandler`2"/> implements.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.CopilotMethodAttribute.#ctor(System.String)">
+            <summary>
+            An attribute which identifies the method which a Copilot request handler like
+            <see cref="T:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.AbstractCopilotLspServiceDocumentRequestHandler`2"/> implements.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.ExportCopilotStatelessLspServiceAttribute">
+            <inheritdoc cref="T:Microsoft.CodeAnalysis.LanguageServer.ExportStatelessLspServiceAttribute"/>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.ExportCopilotStatelessLspServiceAttribute.#ctor(System.Type)">
+            <inheritdoc cref="T:Microsoft.CodeAnalysis.LanguageServer.ExportStatelessLspServiceAttribute"/>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.LanguageServer.ExternalAccess.Copilot.ICopilotLspService">
+            <summary>
+            Interface to mark a Copilot LSP service.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Contracts.ITestDiscoveryLanguageService">
+            <summary>
+            Minimal, service contract for initializing source-based test discovery.
+            <para>
+            The discovery RPC contract is defined in the C# Dev Kit project so the discovery surface can evolve
+            without changing Roslyn. The only stable coupling between Roslyn and C# Dev Kit is the service descriptor
+            (<see cref="P:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Contracts.ITestDiscoveryLanguageService.Descriptor"/>).
+            </para>
+            <para>
+            The implementation is exported via <c>[ExportWorkspaceService(typeof(ITestDiscoveryLanguageService))]</c>
+            and resolved from the host workspace.
+            </para>
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Contracts.ITestDiscoveryLanguageService.Descriptor">
+            <summary>
+            The service descriptor for the source-based test discovery brokered service.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Contracts.ITestDiscoveryLanguageService.InitializeAsync(Microsoft.ServiceHub.Framework.IServiceBroker,System.Threading.CancellationToken)">
+            <summary>
+            Called when the service broker has been fully initialized.
+            </summary>
+            <param name="serviceBroker">The fully-initialized service broker.</param>
+            <param name="cancellationToken">Cancellation token.</param>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Internal.TestDiscoveryServiceContributorFactory">
+            <summary>
+            LSP service factory that constructs the per-LSP-server <see cref="T:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Internal.TestDiscoveryServiceContributor"/>,
+            which registers and proffers the source-based test discovery brokered service into the
+            <see cref="T:Microsoft.VisualStudio.Utilities.ServiceBroker.GlobalBrokeredServiceContainer"/> when the service broker is initialized.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Internal.TestDiscoveryServiceContributorFactory.#ctor">
+            <summary>
+            LSP service factory that constructs the per-LSP-server <see cref="T:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Internal.TestDiscoveryServiceContributor"/>,
+            which registers and proffers the source-based test discovery brokered service into the
+            <see cref="T:Microsoft.VisualStudio.Utilities.ServiceBroker.GlobalBrokeredServiceContainer"/> when the service broker is initialized.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Internal.TestDiscoveryServiceContributor">
+            <summary>
+            Registers and proffers the source-based test discovery brokered service. The proffered service
+            object is the <see cref="T:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Contracts.ITestDiscoveryLanguageService"/> workspace service which also implements the
+            rich discovery RPC interface defined in the C# Dev Kit contracts assembly. The wire descriptor is
+            supplied by the implementation (<see cref="P:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Contracts.ITestDiscoveryLanguageService.Descriptor"/>), so Roslyn
+            never needs to know the concrete RPC interface or its serialization details. When the implementation
+            is not present (for example, a C# extension build that does not ship the Dev Kit discovery component)
+            nothing is registered or proffered.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Internal.TestDiscoveryServiceContributor.#ctor(System.Func{Microsoft.CodeAnalysis.ExternalAccess.TestDiscovery.Contracts.ITestDiscoveryLanguageService})">
+            <summary>
+            Test hook that allows the discovery implementation to be supplied directly, so the
+            registration / proffer / initialization behavior can be exercised without the full LSP MEF host.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticManager.RequestRefresh">
+            <summary>
+            Refreshes hot reload diagnostics.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticManager.Register(System.Collections.Generic.IEnumerable{Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticSourceProvider})">
+            <summary>
+            Registers providers of hot reload diagnostics. Callers are responsible for refreshing diagnostics after registration.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticManager.Unregister(System.Collections.Generic.IEnumerable{Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticSourceProvider})">
+            <summary>
+            Unregisters providers of hot reload diagnostics. Callers are responsible for refreshing diagnostics after un-registration.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticManager.Providers">
+            <summary>
+            Providers.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticSource">
+            <summary>
+            Source of hot reload diagnostics.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticSource.DocumentId">
+            <summary>
+            Text document for which diagnostics are provided.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticSource.GetDiagnosticsAsync(Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.HotReloadRequestContext,System.Threading.CancellationToken)">
+            <summary>
+            Provides list of diagnostics for the given document.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticSourceProvider">
+            <summary>
+            Provides diagnostic sources.
+            </summary>
+        </member>
+        <member name="P:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticSourceProvider.IsDocument">
+            <summary>
+            True if this provider is for documents. False if it is for a workspace, i.e. for unopened documents.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IHotReloadDiagnosticSourceProvider.CreateDiagnosticSourcesAsync(Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.HotReloadRequestContext,System.Threading.CancellationToken)">
+            <summary>
+            Creates the diagnostic sources.
+            </summary>
+            <param name="context">The context.</param>
+            <param name="cancellationToken">The cancellation token.</param>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IVisualDiagnosticsLanguageService">
+            <summary>
+            Workspace service responsible for starting a Visual Diagnostic session on the LSP server
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.Contracts.IVisualDiagnosticsLanguageService.InitializeAsync(Microsoft.ServiceHub.Framework.IServiceBroker,System.Threading.CancellationToken)">
+            <summary>
+            Initialize the diagnostic host
+            </summary>
+            <param name="serviceBroker">Service broker</param>
+            <param name="token">Cancellation token</param>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.VisualDiagnosticsServiceFactory">
+            <summary>
+            LSP Service responsible for loading IVisualDiagnosticsLanguageService workspace service and delegate the broker service to the workspace service,
+            and handling MAUI XAML/C#/CSS/Razor Hot Reload support
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.VisualDiagnostics.VisualDiagnosticsServiceFactory.#ctor">
+            <summary>
+            LSP Service responsible for loading IVisualDiagnosticsLanguageService workspace service and delegate the broker service to the workspace service,
+            and handling MAUI XAML/C#/CSS/Razor Hot Reload support
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.ExportXamlLspServiceFactoryAttribute">
+            <summary>
+            Defines an easy to use subclass for <see cref="T:Microsoft.CodeAnalysis.LanguageServer.ExportLspServiceFactoryAttribute"/> with the Roslyn languages contract name.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.ExportXamlStatelessLspServiceAttribute">
+            <summary>
+            Defines an easy to use subclass for <see cref="T:Microsoft.CodeAnalysis.LanguageServer.ExportStatelessLspServiceAttribute"/> with the Roslyn languages contract name.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IClientCapabilityProvider">
+            <summary>
+            Represents a provider for checking the support for dynamically registering capabilities.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IClientCapabilityProvider.IsDynamicRegistrationSupported(System.String)">
+            <summary>
+            Checks whether the client supports dynamically registering the capability for the given method name.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IClientRequestManager">
+            <summary>
+            Manages sending requests to the client
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IDescriptionService">
+            <summary>
+            Represents a service that can be imported via MEF to provide descriptions for a symbol.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IDescriptionService.GetDescriptionAsync(Microsoft.CodeAnalysis.ISymbol,Microsoft.CodeAnalysis.Project,System.Threading.CancellationToken)">
+            <summary>
+            Gets the description for the given symbol.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IDescriptionService.GetMarkupContent(System.Collections.Immutable.ImmutableArray{Microsoft.CodeAnalysis.TaggedText},System.String,System.Boolean)">
+            <summary>
+            Converts the given <paramref name="tags"/> to markdown content if supported.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IInitializationService">
+            <summary>
+            Represents a service to be exported via MEF for language server initialization.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IInitializationService.OnInitializedAsync(Microsoft.CodeAnalysis.ExternalAccess.Xaml.IClientRequestManager,Microsoft.CodeAnalysis.ExternalAccess.Xaml.IClientCapabilityProvider,System.Threading.CancellationToken)">
+            <summary>
+            Called when the language server is being initialized.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.ILocationService">
+            <summary>
+            Represents a service  can be imported via MEF to provide location information.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.Xaml.ILocationService.GetSymbolLocationsAsync(Microsoft.CodeAnalysis.ISymbol,Microsoft.CodeAnalysis.Project,System.Threading.CancellationToken)">
+            <summary>
+            Gets the locations for the given symbol in the given project.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.Xaml.ILocationService.GetLocationAsync(Microsoft.CodeAnalysis.TextDocument,Microsoft.CodeAnalysis.Text.TextSpan,System.Threading.CancellationToken)">
+            <summary>
+            Gets the location for a text span in a document document.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IOnInitializedService">
+            <summary>
+            Represents a service to be exported via MEF for language server initialization.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IOnInitializedService.OnInitializedAsync(Microsoft.CodeAnalysis.ExternalAccess.Xaml.IClientRequestManager,Roslyn.LanguageServer.Protocol.ClientCapabilities,System.Threading.CancellationToken)">
+            <summary>
+            Called when the language server is being initialized.
+            </summary>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.IResolveCachedDataService">
+            <summary>
+            Represents a service to convert between a large data object + document identifier and request resolve data.
+            </summary>
+            <remarks>
+            The data is held in a short-term cache and the service is provided to implementers of <see cref="T:Microsoft.CodeAnalysis.ExternalAccess.Xaml.XamlRequestHandlerFactoryBase`2" />
+            </remarks>
+        </member>
+    </members>
+</doc>

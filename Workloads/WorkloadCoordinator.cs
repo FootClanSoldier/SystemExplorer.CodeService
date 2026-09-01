@@ -36,7 +36,7 @@ internal sealed class WorkloadCoordinator : IAsyncDisposable
                 return WorkloadAdmissionResult.ShuttingDown();
             }
 
-            if (_activeOperations.ContainsKey(lane))
+            if (_activeOperations.Keys.Any(activeLane => LanesConflict(activeLane, lane)))
             {
                 return WorkloadAdmissionResult.Busy();
             }
@@ -165,11 +165,36 @@ internal sealed class WorkloadCoordinator : IAsyncDisposable
 
     private static void ValidateLane(WorkloadLane lane)
     {
-        if (lane != WorkloadLane.WorkspaceConstruction)
+        if (lane is not WorkloadLane.WorkspaceConstruction
+            and not WorkloadLane.DocumentSynchronization
+            and not WorkloadLane.SemanticReadiness
+            and not WorkloadLane.Completion)
         {
             throw new ArgumentOutOfRangeException(nameof(lane), lane, "unknown workload lane.");
         }
     }
+
+    private static bool LanesConflict(WorkloadLane activeLane, WorkloadLane requestedLane)
+        => (activeLane, requestedLane) switch
+        {
+            (WorkloadLane.WorkspaceConstruction, WorkloadLane.WorkspaceConstruction) => true,
+            (WorkloadLane.WorkspaceConstruction, WorkloadLane.DocumentSynchronization) => true,
+            (WorkloadLane.DocumentSynchronization, WorkloadLane.WorkspaceConstruction) => true,
+            (WorkloadLane.DocumentSynchronization, WorkloadLane.DocumentSynchronization) => true,
+            (WorkloadLane.WorkspaceConstruction, WorkloadLane.SemanticReadiness) => true,
+            (WorkloadLane.SemanticReadiness, WorkloadLane.WorkspaceConstruction) => true,
+            (WorkloadLane.DocumentSynchronization, WorkloadLane.SemanticReadiness) => true,
+            (WorkloadLane.SemanticReadiness, WorkloadLane.DocumentSynchronization) => true,
+            (WorkloadLane.SemanticReadiness, WorkloadLane.SemanticReadiness) => true,
+            (WorkloadLane.WorkspaceConstruction, WorkloadLane.Completion) => true,
+            (WorkloadLane.Completion, WorkloadLane.WorkspaceConstruction) => true,
+            (WorkloadLane.DocumentSynchronization, WorkloadLane.Completion) => true,
+            (WorkloadLane.Completion, WorkloadLane.DocumentSynchronization) => true,
+            (WorkloadLane.SemanticReadiness, WorkloadLane.Completion) => true,
+            (WorkloadLane.Completion, WorkloadLane.SemanticReadiness) => true,
+            (WorkloadLane.Completion, WorkloadLane.Completion) => true,
+            _ => throw new InvalidOperationException("unknown workload-lane conflict pair."),
+        };
 
     private enum WorkloadCoordinatorState
     {
@@ -182,6 +207,9 @@ internal sealed class WorkloadCoordinator : IAsyncDisposable
 internal enum WorkloadLane
 {
     WorkspaceConstruction,
+    DocumentSynchronization,
+    SemanticReadiness,
+    Completion,
 }
 
 internal enum WorkloadAdmissionStatus

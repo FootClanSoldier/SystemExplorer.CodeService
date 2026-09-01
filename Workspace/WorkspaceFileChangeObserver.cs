@@ -128,6 +128,7 @@ internal sealed class WorkspaceFileChangeObserver : IDisposable
                 _workspaceGeneration,
                 new WorkspaceObservedChange(
                     ForceFullSourceValidation: false,
+                    ForceRoslynProjectReload: kind is WorkspaceProjectFileKind.CSharpProject or WorkspaceProjectFileKind.Solution,
                     SourceRelativePath: kind == WorkspaceProjectFileKind.CSharpSource
                         ? path.RelativePath
                         : null,
@@ -204,6 +205,7 @@ internal sealed class WorkspaceFileChangeObserver : IDisposable
                 _workspaceGeneration,
                 new WorkspaceObservedChange(
                     ForceFullSourceValidation: false,
+                    ForceRoslynProjectReload: false,
                     SourceRelativePath: primarySource,
                     SecondarySourceRelativePath: secondarySource,
                     Incident: WorkspaceObserverIncident.None));
@@ -255,6 +257,7 @@ internal sealed class WorkspaceFileChangeObserver : IDisposable
                 _workspaceGeneration,
                 new WorkspaceObservedChange(
                     ForceFullSourceValidation: true,
+                    ForceRoslynProjectReload: true,
                     SourceRelativePath: null,
                     SecondarySourceRelativePath: null,
                     Incident: incident));
@@ -283,6 +286,7 @@ internal sealed class WorkspaceFileChangeObserver : IDisposable
 
 internal readonly record struct WorkspaceObservedChange(
     bool ForceFullSourceValidation,
+    bool ForceRoslynProjectReload,
     string? SourceRelativePath,
     string? SecondarySourceRelativePath,
     WorkspaceObserverIncident Incident);

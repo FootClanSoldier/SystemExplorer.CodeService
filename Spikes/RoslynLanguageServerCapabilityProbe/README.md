@@ -1,15 +1,25 @@
 # Roslyn Language Server capability probe
 
-`RoslynLanguageServerCapabilityProbe` is a **non-production** executable used only to evaluate whether Microsoft's external `roslyn-language-server` is a suitable semantic-engine candidate for a later SystemExplorer.CodeService Roslyn phase.
+> [!NOTE]
+> **Current status:** this is retained **non-production research/regression tooling**. It was originally created to determine whether Microsoft's external `roslyn-language-server` was suitable for SystemExplorer.CodeService. That candidate-selection question has since been resolved: the production CodeService now owns a private, pinned and patched Roslyn Language Server runtime and uses StreamJsonRpc for its production Roslyn integration.
+>
+> The probe remains useful as historical capability evidence and as optional diagnostic/regression tooling for semantic readiness, cross-document completion, document synchronization, recovery, and Roslyn state-lineage investigations. Its candidate-classification terminology is preserved because it is part of the probe/report contract; those labels describe the original evaluation gate and must not be read as the current production-selection state.
+>
+> For current production architecture and Roslyn integration guidance, use `docs/RoslynLanguageServer_ClientIntegration.md`, `docs/Roadmap.txt`, `docs/CodeMap.txt`, and the private-runtime provenance under `ThirdParty/RoslynLanguageServer/`.
 
-It is deliberately isolated from the production CodeService:
+`RoslynLanguageServerCapabilityProbe` is deliberately isolated from the production Service build even though production now has its own Roslyn integration:
 
-- the production `SystemExplorer.CodeService.csproj` does not reference Roslyn or StreamJsonRpc;
-- the production `SystemExplorer.CodeService.slnx` does not include this project;
+- the production `SystemExplorer.CodeService.slnx` does not include the spike project;
+- the production `SystemExplorer.CodeService.csproj` excludes `Spikes/**/*.cs` from its compile glob;
 - the probe does not reference the production CodeService project;
-- no CodeService protocol, workspace, index, cache, workload lane, or Godot plugin behavior is changed by this spike.
+- running the probe does not change CodeService protocol, workspace, index, cache, workload-lane, or Godot-plugin behavior;
+- production's own StreamJsonRpc/private-Roslyn dependencies are independent of this spike and are not evidence that the spike is part of the production build.
+
+The `Spikes/` tree should therefore be read as retained research/regression evidence, not as the implementation source of truth for current production Roslyn behavior.
 
 ## Pinned dependencies
+
+The dependency pin below is the probe's controlled official-package baseline. It is **not** the authority for the current production Roslyn runtime; production runtime bytes and provenance are maintained separately under `ThirdParty/RoslynLanguageServer/`.
 
 The probe is designed for exactly:
 
@@ -872,7 +882,7 @@ If no semantic document selection is supplied, the real-workspace semantic smoke
 
 ## Report
 
-A machine-readable JSON report with `schemaVersion = 3` and `probeVersion = 1.3.3` is written after a completed probe run. By default it is created under:
+A machine-readable JSON report with `schemaVersion = 3` and `probeVersion = 1.3.4` is written after a completed probe run. By default it is created under:
 
 ```text
 <system-temp>/SystemExplorer.CodeService/RoslynProbe/roslyn_probe_<timestamp>.json
@@ -908,7 +918,7 @@ Candidate values are:
 - `UnsuitableCandidate` — one or more required capability gates failed;
 - `Inconclusive` — reserved for infrastructure conditions where a semantic decision cannot safely be made.
 
-These statuses are spike evidence only. They do **not** mean Roslyn LS has been selected for production and do not implement Roadmap Phase 6, Phase 7, or Phase 8.
+These status names are preserved for report compatibility with the probe's original candidate-selection role. They are **spike-local evidence**, not the current SystemExplorer.CodeService architecture state. Roslyn Language Server has since been selected and integrated into production CodeService. A `SuitableCandidate*` result therefore means that the tested probe gates passed; it does not perform or control the production selection. Likewise, an `UnsuitableCandidate` result is evidence about the tested runtime/scenario and is not by itself an instruction to replace the production semantic engine.
 
 ## Cancellation and process-tree retirement
 
@@ -964,9 +974,9 @@ The probe does not silently restart after a failed `didChange`, retry semantic r
 4 = probe infrastructure failure or cancellation
 ```
 
-## Post-hardening decision gate
+## Historical candidate decision gate and current reuse
 
-Use this spike as evidence only after the following order has completed:
+The following sequence documents the original capability-selection gate. It remains useful when reproducing historical evidence or when deliberately qualifying a different Roslyn Language Server build, but it no longer gates whether CodeService uses Roslyn at all:
 
 ```text
 clean production build
@@ -977,9 +987,9 @@ clean production build
   -> only then run a real Godot workspace probe with completion + exact-target definition
 ```
 
-A semantic scenario failure after successful setup is capability evidence. Do not weaken capability assertions merely to obtain PASS.
+A semantic scenario failure after successful setup remains capability/regression evidence. Do not weaken capability assertions merely to obtain PASS.
 
-If all hard gates pass, Roslyn Language Server becomes the leading Phase-6 semantic-engine candidate and the next work is production architecture/design for a CodeService-owned Roslyn process host, semantic workspace readiness, and Roslyn fault/restart containment. If an important gate fails, test that exact failed capability against another candidate before considering a custom Roslyn host. Do not begin production Roslyn integration or a custom Roslyn host from this spike alone.
+Historically, passing these hard gates justified promoting Roslyn Language Server as the leading semantic-engine candidate. That architectural promotion has already happened: current CodeService production source owns Roslyn process hosting, semantic readiness/document synchronization, completion, and fault/restart containment. Today, use this probe to reproduce or isolate a specific Roslyn behavior; use the current production source and current project documentation as authority for what CodeService actually implements.
 
 ## Build isolation
 
@@ -995,4 +1005,4 @@ Dedicated spike build:
 dotnet build Spikes/SystemExplorer.CodeService.Spikes.slnx -c Release
 ```
 
-The production solution intentionally does not build the spike or restore StreamJsonRpc. `SystemExplorer.CodeService.csproj` also keeps `<Compile Remove="Spikes/**/*.cs" />` as an independent source-glob isolation boundary.
+The production solution intentionally does not build the spike. `SystemExplorer.CodeService.csproj` keeps `<Compile Remove="Spikes/**/*.cs" />` as an independent source-glob isolation boundary. Production CodeService now has its **own** StreamJsonRpc dependency as part of the production Roslyn client, so dependency separation should be understood as project/build isolation rather than "production does not use StreamJsonRpc." The dedicated spike solution remains separately buildable for controlled probe work.

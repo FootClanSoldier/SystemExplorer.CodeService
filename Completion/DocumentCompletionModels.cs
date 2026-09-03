@@ -15,7 +15,9 @@ internal sealed record DocumentCompletionItem(
     int? Kind,
     string FilterText,
     string SortText,
-    bool Preselect);
+    bool Preselect,
+    CompletionSemanticOrigin SemanticOrigin,
+    int? InheritanceDepth);
 
 internal enum DocumentCompletionOutcome
 {

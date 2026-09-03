@@ -227,6 +227,18 @@ internal static class RoslynStateLineageTraceScenario
             captureComplete,
             $"stderrTruncated={stderrTruncated.ToString().ToLowerInvariant()}; events={trace.Count}; completionPre={completionPre.Length}; completionPost={completionPost.Length}; diagnosticAfter={diagnosticAfter.Length}; max={ProbeConstants.MaxRoslynStateTraceEvents}"));
 
+        bool deterministicPreFreezeEvidencePresent = completionPre.Length > 0
+            && completionPre.All(static e => !string.IsNullOrWhiteSpace(e.SolutionChecksum)
+                && !string.IsNullOrWhiteSpace(e.TargetFilePath)
+                && !string.IsNullOrWhiteSpace(e.TargetTextHash)
+                && e.TargetTextLength is >= 0);
+        checks.Add(new ProbeCheckResult(
+            "StateTracePreFreezeDeterministicEvidencePresent",
+            deterministicPreFreezeEvidencePresent,
+            deterministicPreFreezeEvidencePresent
+                ? $"events={completionPre.Length}; solutionChecksum/targetFilePath/targetTextHash/targetTextLength present"
+                : $"events={completionPre.Length}; one or more deterministic exact pre-freeze fields missing"));
+
         bool trackedV2 = trace.Any(e => IsTrackedUpdate(e) && e.Version == 2 && e.TargetHash == hashV2);
         bool trackedV3 = trace.Any(e => IsTrackedUpdate(e) && e.Version == 3 && e.TargetHash == hashV3);
         checks.Add(new ProbeCheckResult("StateTraceV2TrackedCurrentTextObserved", trackedV2, $"expectedHash={hashV2}"));

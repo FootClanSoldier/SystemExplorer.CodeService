@@ -1,32 +1,22 @@
 # Roslyn Language Server capability probe
 
-> [!NOTE]
-> **Current status:** this is retained **non-production research/regression tooling**. It was originally created to determine whether Microsoft's external `roslyn-language-server` was suitable for SystemExplorer.CodeService. That candidate-selection question has since been resolved: the production CodeService now owns a private, pinned and patched Roslyn Language Server runtime and uses StreamJsonRpc for its production Roslyn integration.
->
-> The probe remains useful as historical capability evidence and as optional diagnostic/regression tooling for semantic readiness, cross-document completion, document synchronization, recovery, and Roslyn state-lineage investigations. Its candidate-classification terminology is preserved because it is part of the probe/report contract; those labels describe the original evaluation gate and must not be read as the current production-selection state.
->
-> For current production architecture and Roslyn integration guidance, use `docs/RoslynLanguageServer_ClientIntegration.md`, `docs/Roadmap.txt`, `docs/CodeMap.txt`, and the private-runtime provenance under `ThirdParty/RoslynLanguageServer/`.
+`RoslynLanguageServerCapabilityProbe` is a **non-production** executable used only to evaluate whether Microsoft's external `roslyn-language-server` is a suitable semantic-engine candidate for a later SystemExplorer.CodeService Roslyn phase.
 
-`RoslynLanguageServerCapabilityProbe` is deliberately isolated from the production Service build even though production now has its own Roslyn integration:
+It is deliberately isolated from the production CodeService:
 
-- the production `SystemExplorer.CodeService.slnx` does not include the spike project;
-- the production `SystemExplorer.CodeService.csproj` excludes `Spikes/**/*.cs` from its compile glob;
+- the production `SystemExplorer.CodeService.csproj` does not reference Roslyn or StreamJsonRpc;
+- the production `SystemExplorer.CodeService.slnx` does not include this project;
 - the probe does not reference the production CodeService project;
-- running the probe does not change CodeService protocol, workspace, index, cache, workload-lane, or Godot-plugin behavior;
-- production's own StreamJsonRpc/private-Roslyn dependencies are independent of this spike and are not evidence that the spike is part of the production build.
-
-The `Spikes/` tree should therefore be read as retained research/regression evidence, not as the implementation source of truth for current production Roslyn behavior.
+- no CodeService protocol, workspace, index, cache, workload lane, or Godot plugin behavior is changed by this spike.
 
 ## Pinned dependencies
-
-The dependency pin below is the probe's controlled official-package baseline. It is **not** the authority for the current production Roslyn runtime; production runtime bytes and provenance are maintained separately under `ThirdParty/RoslynLanguageServer/`.
 
 The probe is designed for exactly:
 
 - `roslyn-language-server` **5.12.0-1.26426.8**
 - `StreamJsonRpc` **2.25.29**
 - target framework `net10.0`
-- probe version **1.3.4** / report schema **3**
+- probe version **1.3.6** / ordinary report schema **3** / semantic-origin-only report schema **1**
 - optional Roslyn state-lineage instrumentation base: `dotnet/roslyn` commit `3aeb96c9ecc56a5ee483558f9e648e33e7bfe756`
 
 Do not replace the Roslyn tool version with `latest`, a wildcard, or another prerelease version when collecting evidence for this spike. If the exact tool package is unavailable, stop the runtime verification rather than silently substituting a different Roslyn Language Server build.
@@ -882,7 +872,7 @@ If no semantic document selection is supplied, the real-workspace semantic smoke
 
 ## Report
 
-A machine-readable JSON report with `schemaVersion = 3` and `probeVersion = 1.3.4` is written after a completed probe run. By default it is created under:
+A machine-readable JSON report with `schemaVersion = 3` and `probeVersion = 1.3.3` is written after a completed probe run. By default it is created under:
 
 ```text
 <system-temp>/SystemExplorer.CodeService/RoslynProbe/roslyn_probe_<timestamp>.json
@@ -918,7 +908,7 @@ Candidate values are:
 - `UnsuitableCandidate` — one or more required capability gates failed;
 - `Inconclusive` — reserved for infrastructure conditions where a semantic decision cannot safely be made.
 
-These status names are preserved for report compatibility with the probe's original candidate-selection role. They are **spike-local evidence**, not the current SystemExplorer.CodeService architecture state. Roslyn Language Server has since been selected and integrated into production CodeService. A `SuitableCandidate*` result therefore means that the tested probe gates passed; it does not perform or control the production selection. Likewise, an `UnsuitableCandidate` result is evidence about the tested runtime/scenario and is not by itself an instruction to replace the production semantic engine.
+These statuses are spike evidence only. They do **not** mean Roslyn LS has been selected for production and do not implement Roadmap Phase 6, Phase 7, or Phase 8.
 
 ## Cancellation and process-tree retirement
 
@@ -974,9 +964,9 @@ The probe does not silently restart after a failed `didChange`, retry semantic r
 4 = probe infrastructure failure or cancellation
 ```
 
-## Historical candidate decision gate and current reuse
+## Post-hardening decision gate
 
-The following sequence documents the original capability-selection gate. It remains useful when reproducing historical evidence or when deliberately qualifying a different Roslyn Language Server build, but it no longer gates whether CodeService uses Roslyn at all:
+Use this spike as evidence only after the following order has completed:
 
 ```text
 clean production build
@@ -987,9 +977,9 @@ clean production build
   -> only then run a real Godot workspace probe with completion + exact-target definition
 ```
 
-A semantic scenario failure after successful setup remains capability/regression evidence. Do not weaken capability assertions merely to obtain PASS.
+A semantic scenario failure after successful setup is capability evidence. Do not weaken capability assertions merely to obtain PASS.
 
-Historically, passing these hard gates justified promoting Roslyn Language Server as the leading semantic-engine candidate. That architectural promotion has already happened: current CodeService production source owns Roslyn process hosting, semantic readiness/document synchronization, completion, and fault/restart containment. Today, use this probe to reproduce or isolate a specific Roslyn behavior; use the current production source and current project documentation as authority for what CodeService actually implements.
+If all hard gates pass, Roslyn Language Server becomes the leading Phase-6 semantic-engine candidate and the next work is production architecture/design for a CodeService-owned Roslyn process host, semantic workspace readiness, and Roslyn fault/restart containment. If an important gate fails, test that exact failed capability against another candidate before considering a custom Roslyn host. Do not begin production Roslyn integration or a custom Roslyn host from this spike alone.
 
 ## Build isolation
 
@@ -1005,4 +995,183 @@ Dedicated spike build:
 dotnet build Spikes/SystemExplorer.CodeService.Spikes.slnx -c Release
 ```
 
-The production solution intentionally does not build the spike. `SystemExplorer.CodeService.csproj` keeps `<Compile Remove="Spikes/**/*.cs" />` as an independent source-glob isolation boundary. Production CodeService now has its **own** StreamJsonRpc dependency as part of the production Roslyn client, so dependency separation should be understood as project/build isolation rather than "production does not use StreamJsonRpc." The dedicated spike solution remains separately buildable for controlled probe work.
+The production solution intentionally does not build the spike or restore StreamJsonRpc. `SystemExplorer.CodeService.csproj` also keeps `<Compile Remove="Spikes/**/*.cs" />` as an independent source-glob isolation boundary.
+
+
+## Probe 1.3.6 — CompletionSemanticOrigin one-command verification
+
+Probe 1.3.6 keeps ordinary report schema 3, all ordinary `ProbeBaseline` capabilities, the existing
+full-suite suitability classifier, and the diagnostic-only status of `CompletionSemanticOrigin`
+unchanged. Full capability mode still requires `--server`, still runs
+`RoslynLanguageServerToolVerifier`, still executes the current `ProbeScenarioRunner`, and still derives
+its exit semantics from `ProbeOverallDecision`.
+
+The existing semantic-origin scenario remains available in full mode through the optional pair:
+
+```text
+--semantic-origin-server <absolute generated wrapper>
+--semantic-origin-provenance <absolute generated provenance.json>
+```
+
+It remains outside `RequiredFixtureScenarios`; its PASS/FAIL/SKIPPED result does not affect
+`SuitableCandidate` / `UnsuitableCandidate`, `FixtureSemanticRequestSucceeded`,
+`FixtureSemanticReadyMs`, fixture server capabilities, or primary document/version state.
+
+Probe 1.3.6 additionally adds an explicit dedicated mode:
+
+```text
+--semantic-origin-only
+--semantic-origin-server <absolute generated wrapper>
+--semantic-origin-provenance <absolute generated provenance.json>
+[--report <path>]
+[--keep-artifacts]
+```
+
+This mode rejects ordinary/full-suite options, does not require or verify an ordinary private
+`--server`, does not execute the full scenario runner, StateTrace, real workspace, recovery,
+document synchronization, comparisons, or the ordinary suitability classifier. It creates/restores the
+same controlled `ProbeFixtureWorkspace` and runs exactly `CompletionSemanticOriginScenario`. The
+scenario's existing `ProbeCheckResult` assertions are the semantic authority:
+
+```text
+Local
+Parameter
+LocalFunction
+CurrentType        depth 0
+BaseType           depth 1
+BaseType           depth 2
+OtherUserCode
+source-backed reduced extension
+FrameworkOrOther
+Unknown/non-symbol control
+metadata well-formedness
+server survival
+graceful retirement
+```
+
+`CompletionSemanticOriginScenario.Status == Pass` returns exit 0, `Fail` returns exit 1, unexpected
+`Skipped` returns infrastructure exit 4. Invalid CLI combinations remain exit 2, instrumented
+server/provenance setup failures use exit 3 where setup semantics apply, and fixture/general
+infrastructure failures use exit 4. This dedicated decision path does not add semantic origin to the
+ordinary `RequiredFixtureScenarios`.
+
+Only the semantic-origin scenario uses
+`RoslynLspClientCapabilityProfile.ProductionCompletionWire`, which mirrors the current production
+completion-relevant VS-extension wire. Existing scenarios continue to use `ProbeBaseline` exactly as
+before. The temporary semantic classifier and its fail-closed rules remain diagnostic evidence only;
+production now carries the same verified classifier semantics through the separate private Roslyn v2
+runtime and Service `CompletionSchemaVersion = 3`. The probe still does not own or compile into that
+production implementation.
+
+### Normal one-command semantic-origin verification
+
+On Windows, normal verification is now the supported owner-facing runner:
+
+```bat
+Instrumentation\CompletionSemanticOrigin\Run-CompletionSemanticOrigin.cmd ^
+  -RoslynRepositoryRoot "C:\Source\roslyn" ^
+  -ServiceThirdPartyZip "C:\Artifacts\Service.ThirdParty.zip"
+```
+
+The two paths can instead be configured once through:
+
+```text
+SYSTEMEXPLORER_ROSLYN_REPOSITORY_ROOT
+SYSTEMEXPLORER_SERVICE_THIRDPARTY_ZIP
+```
+
+after which `Run-CompletionSemanticOrigin.cmd` is sufficient. Explicit parameters take precedence over
+environment values. The runner does not scan disks or guess locations.
+
+The runner verifies the exact current production-v2 `Service.ThirdParty.zip` SHA-256, opens it through
+.NET zip APIs, verifies unique canonical `0001` and `0002` entries plus both pinned hashes, and extracts
+only `ThirdParty/RoslynLanguageServer/PROVENANCE.txt` and canonical semantic-reuse `0001`. The low-level
+preparation intentionally rebuilds the historical semantic-reuse-only v1 baseline before adding
+throwaway diagnostic instrumentation, so production `0002` is validated as current archive provenance
+but is not applied to that temporary baseline. The supplied normal Roslyn repository is not checked
+out, reset, cleaned, patched, or otherwise source-mutated.
+
+The runner then invokes the existing low-level `Prepare-CompletionSemanticOrigin.ps1` against the owned
+clean worktree. That remains the single implementation of Roslyn restore, canonical patch application,
+source-anchor verification, semantic-origin instrumentation, targeted LanguageServer build, wrapper
+generation, and preparation provenance. Generated `provenance.json` is independently validated before
+the C# probe is invoked.
+
+The C# invocation is dedicated:
+
+```text
+dotnet run ... -- --semantic-origin-only
+    --semantic-origin-server <generated wrapper>
+    --semantic-origin-provenance <generated provenance>
+    --report <persistent report>
+```
+
+No ordinary `--server` is supplied. The C# scenario, not PowerShell console-text parsing, owns semantic
+PASS/FAIL. Console output is a concise matrix and the process exit code is the actual test result:
+
+```text
+RESULT: PASS
+exit code 0
+```
+
+or:
+
+```text
+RESULT: FAIL
+exit code 1
+```
+
+The runner uses process-local `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass` only through
+its `.cmd` launcher; it never calls `Set-ExecutionPolicy` or changes registry/Machine/User policy.
+Temporary worktree, extracted ThirdParty inputs, Roslyn instrumentation output, and probe build
+artifacts live outside the Service source tree. By default the owned dirty worktree and transient
+staging are safely removed after the run using a run-specific ownership marker. Native Git stderr is
+captured as diagnostics while Git's exit code remains authority; temporary Roslyn restore/build work
+also disables persistent MSBuild/shared-compilation processes, and owned worktree removal uses bounded
+Windows retries before failing closed and retaining the owned path. Instrumentation source anchors are
+exact-content checks with only LF/CRLF representation normalized to the checked-out pinned source.
+Reports and bounded runner diagnostics survive cleanup. `-KeepArtifacts` retains runner-owned state for
+debugging.
+
+`Prepare-CompletionSemanticOrigin.cmd` / `.ps1` remain supported expert/debug low-level entrypoints for
+an already-clean throwaway checkout. They deliberately do not reset or clean an arbitrary caller-owned
+checkout after failure. Normal project-owner verification should use `Run-CompletionSemanticOrigin.cmd`
+instead of manually preparing a checkout, running the unrelated full probe, reading raw LSP JSON, or
+classifying semantic categories by hand.
+
+
+### Production private-runtime reproduction
+
+`Instrumentation/CompletionSemanticOrigin/ProductionRuntime/` is the deterministic reproduction and
+promotion tooling for the separate private Roslyn production runtime. Its canonical build-input copy:
+
+```text
+patches/0002-Expose-SystemExplorer-completion-semantic-origin.patch
+```
+
+has SHA-256:
+
+```text
+6818cc1b3a10c97b31782cce20b7590a4a7f1b39710d7b48dd5b234e1b3bc1fb
+```
+
+and is byte-identical to the shipped canonical `0002` in production `Service.ThirdParty.zip`.
+
+The Windows builder takes a local Roslyn repository plus the previous verified v1 ThirdParty archive,
+creates its own pinned detached worktree, extracts and applies unchanged semantic-reuse `0001`, applies
+canonical production `0002`, uses repository-native restore/build, packages one coherent win-x64
+LanguageServer output, and generates hashes, `PROVENANCE.txt`, machine-readable evidence, and the new
+ThirdParty archive. The owner source Roslyn working tree may be dirty and is never reset/cleaned or
+patched by the builder.
+
+The successful project-owner production build on 2026-09-03 produced:
+
+```text
+roslyn-3aeb96c9-systemexplorer-6818cc1b3a10-win-x64-v2
+Service.ThirdParty.zip SHA-256:
+45f152e900326520626b5f17248fdf608d7a7e61f01da42b480dce138f5453d8
+```
+
+This production builder is not a second semantic assertion engine. Semantic expected-value authority
+remains the C# `CompletionSemanticOriginScenario`; normal Service runtime validation owns only shipped
+binary/provenance identity and strict private-metadata contract parsing.

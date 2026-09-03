@@ -48,12 +48,20 @@ internal sealed class ProbeScenarioContext
         string workingDirectory,
         bool autoLoadProjects,
         CancellationToken cancellationToken)
-        => StartSessionAsync(LaunchSpec, workingDirectory, autoLoadProjects, cancellationToken);
+        => StartSessionAsync(LaunchSpec, workingDirectory, autoLoadProjects, RoslynLspClientCapabilityProfile.ProbeBaseline, cancellationToken);
+
+    public Task<ProbeSession> StartSessionAsync(
+        RoslynLanguageServerLaunchSpec customLaunchSpec,
+        string workingDirectory,
+        bool autoLoadProjects,
+        CancellationToken cancellationToken)
+        => StartSessionAsync(customLaunchSpec, workingDirectory, autoLoadProjects, RoslynLspClientCapabilityProfile.ProbeBaseline, cancellationToken);
 
     public async Task<ProbeSession> StartSessionAsync(
         RoslynLanguageServerLaunchSpec customLaunchSpec,
         string workingDirectory,
         bool autoLoadProjects,
+        RoslynLspClientCapabilityProfile capabilityProfile,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(customLaunchSpec);
@@ -64,7 +72,7 @@ internal sealed class ProbeScenarioContext
             generation,
             autoLoadProjects,
             cancellationToken).ConfigureAwait(false);
-        return new ProbeSession(process, ProcessResults);
+        return new ProbeSession(process, ProcessResults, capabilityProfile);
     }
 }
 
@@ -97,11 +105,11 @@ internal sealed class ProbeSession : IAsyncDisposable
     private readonly List<RoslynLanguageServerProcessResult> _processResults;
     private int _retired;
 
-    public ProbeSession(RoslynLanguageServerProcess process, List<RoslynLanguageServerProcessResult> processResults)
+    public ProbeSession(RoslynLanguageServerProcess process, List<RoslynLanguageServerProcessResult> processResults, RoslynLspClientCapabilityProfile capabilityProfile = RoslynLspClientCapabilityProfile.ProbeBaseline)
     {
         Process = process;
         _processResults = processResults;
-        Client = new RoslynLspClient(process);
+        Client = new RoslynLspClient(process, capabilityProfile);
     }
 
     public RoslynLanguageServerProcess Process { get; }

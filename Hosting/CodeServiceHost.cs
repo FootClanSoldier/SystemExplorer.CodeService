@@ -152,10 +152,13 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                         distributionId = validatedRoslynRuntime.RuntimeDistributionId,
                         platform = RoslynLanguageServerRuntimeResolver.GetCurrentPlatformName(),
                         processArchitecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
-                        fixedDllSha256 = validatedRoslynRuntime.VerifiedDllSha256,
+                        languageServerDllSha256 = validatedRoslynRuntime.VerifiedLanguageServerDllSha256,
+                        featuresDllSha256 = validatedRoslynRuntime.VerifiedFeaturesDllSha256,
+                        languageServerProtocolDllSha256 = validatedRoslynRuntime.VerifiedLanguageServerProtocolDllSha256,
                         upstreamCommit = validatedRoslynRuntime.VerifiedUpstreamCommit,
-                        canonicalFixPatchSha256 = validatedRoslynRuntime.VerifiedCanonicalFixPatchSha256,
-                        localFixCommit = validatedRoslynRuntime.VerifiedLocalFixCommit,
+                        semanticReusePatchSha256 = validatedRoslynRuntime.VerifiedSemanticReusePatchSha256,
+                        semanticReuseSourceCommit = validatedRoslynRuntime.VerifiedSemanticReuseSourceCommit,
+                        completionSemanticOriginPatchSha256 = validatedRoslynRuntime.VerifiedCompletionSemanticOriginPatchSha256,
                         provenance = "systemexplorer-private-patched-build",
                     });
             }

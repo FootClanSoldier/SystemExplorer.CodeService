@@ -2,7 +2,7 @@ namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.
 
 internal static class RoslynStateTraceParser
 {
-    private const int MaxScalarLength = 256;
+    private const int MaxScalarLength = 1024;
     private const int MaxTraceLineLength = 4096;
 
     public static IReadOnlyList<RoslynStateTraceEvent> Parse(string capturedStderr)
@@ -48,6 +48,10 @@ internal static class RoslynStateTraceParser
                 ParseOptionalInt(fields, "workspaceSolution"),
                 ParseOptionalInt(fields, "selectedSolution"),
                 ParseOptionalString(fields, "solutionStateContentVersion"),
+                ParseOptionalString(fields, "solutionChecksum"),
+                ParseOptionalString(fields, "targetFilePath"),
+                ParseOptionalString(fields, "targetTextHash"),
+                ParseOptionalInt(fields, "targetTextLength"),
                 ParseOptionalInt(fields, "project"),
                 ParseOptionalInt(fields, "tracker"),
                 ParseOptionalString(fields, "trackerState"),

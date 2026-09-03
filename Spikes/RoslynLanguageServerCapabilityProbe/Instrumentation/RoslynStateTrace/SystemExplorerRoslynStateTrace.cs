@@ -11,6 +11,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.CodeAnalysis.Text;
 
 namespace Microsoft.CodeAnalysis;
@@ -53,6 +54,60 @@ internal static class SystemExplorerRoslynStateTrace
             Write(eventName,
                 ("version", version.ToString()),
                 ("targetHash", Hash(text)));
+        }
+        catch
+        {
+        }
+    }
+
+    public static async Task TracePreFreezeAsync(Solution solution, DocumentId documentId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!s_enabled)
+                return;
+
+            var checksum = await solution.CompilationState.GetChecksumAsync(cancellationToken).ConfigureAwait(false);
+            var target = FindTarget(solution);
+            SystemExplorerRoslynTrackerSnapshot tracker = target.ProjectId is null
+                ? default
+                : solution.CompilationState.GetSystemExplorerRoslynStateTraceSnapshot(target.ProjectId);
+
+            Document? targetDocument = null;
+            foreach (Project project in solution.Projects)
+            {
+                foreach (Document document in project.Documents)
+                {
+                    if (IsTargetIdentifier(document.FilePath) || IsTargetIdentifier(document.Name))
+                    {
+                        targetDocument = document;
+                        break;
+                    }
+                }
+                if (targetDocument is not null)
+                    break;
+            }
+
+            SourceText? targetText = targetDocument is null
+                ? null
+                : await targetDocument.GetTextAsync(cancellationToken).ConfigureAwait(false);
+
+            Write("completion.pre_freeze",
+                ("document", Id(documentId)),
+                ("solution", Id(solution)),
+                ("selectedSolution", Id(solution)),
+                ("solutionStateContentVersion", Scalar(solution.SolutionStateContentVersion)),
+                ("project", Id(target.ProjectId)),
+                ("tracker", Scalar(tracker.TrackerIdentity)),
+                ("trackerState", tracker.TrackerState),
+                ("pendingCount", Scalar(tracker.PendingCount)),
+                ("tryGetCompilation", Scalar(tracker.TryGetCompilation)),
+                ("compilation", Scalar(tracker.CompilationIdentity)),
+                ("targetHash", target.Hash),
+                ("solutionChecksum", checksum.ToString()),
+                ("targetFilePath", targetDocument?.FilePath),
+                ("targetTextHash", targetText is null ? null : Hash(targetText)),
+                ("targetTextLength", targetText?.Length.ToString()));
         }
         catch
         {

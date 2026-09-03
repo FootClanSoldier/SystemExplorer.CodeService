@@ -3,11 +3,17 @@ namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe;
 internal static class ProbeConstants
 {
     public const int ReportSchemaVersion = 3;
-    public const string ProbeVersion = "1.3.4";
+    public const int CompletionSemanticOriginVerificationReportSchemaVersion = 1;
+    public const string ProbeVersion = "1.3.6";
     public const string RoslynLanguageServerVersion = "5.12.0-1.26426.8";
     public const string StreamJsonRpcVersion = "2.25.29";
     public const string RoslynSourceCommit = "3aeb96c9ecc56a5ee483558f9e648e33e7bfe756";
     public const int RoslynStateTraceVersion = 1;
+    public const int CompletionSemanticOriginInstrumentationVersion = 1;
+    public const string CanonicalSystemExplorerPatchSha256 = "11076630b66576961cfd3e56120b15c9e95b352e08f3f551053a79a647d2f2be";
+    public const string RoslynBaselineDistributionId = "roslyn-3aeb96c9-systemexplorer-405fb7f9860-win-x64-v1";
+    public const string CompletionSemanticOriginJsonPropertyName = "_systemExplorer_completionSemanticOrigin";
+    public const string CompletionInheritanceDepthJsonPropertyName = "_systemExplorer_completionInheritanceDepth";
     public const string RoslynStateTracePrefix = "SETRACE|";
     public const int MaxRoslynStateTraceEvents = 256;
 

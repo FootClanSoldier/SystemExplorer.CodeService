@@ -259,7 +259,9 @@ internal sealed class DocumentCompletionHost : IDisposable
                 item.Kind,
                 item.FilterText,
                 item.SortText,
-                item.Preselect))
+                item.Preselect,
+                item.SemanticOrigin,
+                item.InheritanceDepth))
             .ToArray();
 
         DocumentCompletionResult result = new(

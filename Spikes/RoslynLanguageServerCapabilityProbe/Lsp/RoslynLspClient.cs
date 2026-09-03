@@ -7,16 +7,24 @@ using SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.Proc
 
 namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.Lsp;
 
+internal enum RoslynLspClientCapabilityProfile
+{
+    ProbeBaseline,
+    ProductionCompletionWire,
+}
+
 internal sealed class RoslynLspClient : IAsyncDisposable
 {
     private readonly RoslynLanguageServerProcess _process;
     private readonly JsonRpc _rpc;
     private readonly RoslynLspTraceListener _traceListener;
     private int _disposed;
+    private readonly RoslynLspClientCapabilityProfile _capabilityProfile;
 
-    public RoslynLspClient(RoslynLanguageServerProcess process)
+    public RoslynLspClient(RoslynLanguageServerProcess process, RoslynLspClientCapabilityProfile capabilityProfile = RoslynLspClientCapabilityProfile.ProbeBaseline)
     {
         _process = process;
+        _capabilityProfile = capabilityProfile;
         Callbacks = new RoslynLspClientCallbacks();
         SystemTextJsonFormatter formatter = new();
         formatter.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
@@ -43,7 +51,7 @@ internal sealed class RoslynLspClient : IAsyncDisposable
             ClientInfo = new ClientInfo("SystemExplorer.CodeService Roslyn capability probe", ProbeConstants.ProbeVersion),
             RootUri = rootUri,
             WorkspaceFolders = [new WorkspaceFolder(rootUri, Path.GetFileName(workspaceRoot))],
-            Capabilities = CreateClientCapabilities(),
+            Capabilities = CreateClientCapabilities(_capabilityProfile),
         };
 
         using CancellationTokenSource deadline = CreateDeadline(ProbeConstants.InitializeTimeout, cancellationToken);
@@ -291,10 +299,54 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                 && detailElement.ValueKind == JsonValueKind.String
                     ? detailElement.GetString()
                     : null;
-            normalized.Add(new CompletionItemSummary(label, kind, detail));
+            ParseSemanticOriginMetadata(item, out CompletionSemanticOriginKind? semanticOrigin, out int? inheritanceDepth, out bool semanticOriginMalformed);
+            normalized.Add(new CompletionItemSummary(label, kind, detail, semanticOrigin, inheritanceDepth, semanticOriginMalformed));
         }
 
         return (normalized, new CompletionResponseEvidence(resultKind, rawItemCount, isIncomplete));
+    }
+
+    private static void ParseSemanticOriginMetadata(
+        JsonElement item,
+        out CompletionSemanticOriginKind? origin,
+        out int? depth,
+        out bool malformed)
+    {
+        origin = null;
+        depth = null;
+        malformed = false;
+
+        bool hasOrigin = item.TryGetProperty(ProbeConstants.CompletionSemanticOriginJsonPropertyName, out JsonElement originElement);
+        bool hasDepth = item.TryGetProperty(ProbeConstants.CompletionInheritanceDepthJsonPropertyName, out JsonElement depthElement);
+        if (!hasOrigin && !hasDepth)
+            return;
+
+        if (!hasOrigin || originElement.ValueKind != JsonValueKind.String
+            || !Enum.TryParse(originElement.GetString(), ignoreCase: false, out CompletionSemanticOriginKind parsedOrigin)
+            || !Enum.IsDefined(parsedOrigin))
+        {
+            malformed = true;
+            return;
+        }
+
+        origin = parsedOrigin;
+        if (hasDepth)
+        {
+            if (depthElement.ValueKind != JsonValueKind.Number || !depthElement.TryGetInt32(out int parsedDepth))
+            {
+                malformed = true;
+                return;
+            }
+            depth = parsedDepth;
+        }
+
+        bool requiresDepth = parsedOrigin is CompletionSemanticOriginKind.CurrentType or CompletionSemanticOriginKind.BaseType;
+        if (requiresDepth != hasDepth
+            || (parsedOrigin == CompletionSemanticOriginKind.CurrentType && depth != 0)
+            || (parsedOrigin == CompletionSemanticOriginKind.BaseType && depth < 1))
+        {
+            malformed = true;
+        }
     }
 
     private static IReadOnlyList<LspLocationSummary> NormalizeLocations(JsonElement result)
@@ -370,25 +422,45 @@ internal sealed class RoslynLspClient : IAsyncDisposable
         return diagnostics;
     }
 
-    private static object CreateClientCapabilities() => new
+    private static object CreateClientCapabilities(RoslynLspClientCapabilityProfile profile) => profile switch
     {
-        workspace = new
+        RoslynLspClientCapabilityProfile.ProbeBaseline => new
         {
-            configuration = true,
-            workspaceFolders = true,
-            didChangeConfiguration = new { dynamicRegistration = true },
+            workspace = new
+            {
+                configuration = true,
+                workspaceFolders = true,
+                didChangeConfiguration = new { dynamicRegistration = true },
+            },
+            textDocument = new
+            {
+                synchronization = new { dynamicRegistration = true, didSave = false, willSave = false, willSaveWaitUntil = false },
+                completion = new { dynamicRegistration = true, completionItem = new { snippetSupport = false } },
+                definition = new { dynamicRegistration = true },
+                references = new { dynamicRegistration = true },
+                rename = new { dynamicRegistration = true, prepareSupport = true },
+                diagnostic = new { dynamicRegistration = true, relatedDocumentSupport = false },
+                publishDiagnostics = new { relatedInformation = true, versionSupport = true },
+            },
+            window = new { workDoneProgress = false },
         },
-        textDocument = new
+        RoslynLspClientCapabilityProfile.ProductionCompletionWire => new
         {
-            synchronization = new { dynamicRegistration = true, didSave = false, willSave = false, willSaveWaitUntil = false },
-            completion = new { dynamicRegistration = true, completionItem = new { snippetSupport = false } },
-            definition = new { dynamicRegistration = true },
-            references = new { dynamicRegistration = true },
-            rename = new { dynamicRegistration = true, prepareSupport = true },
-            diagnostic = new { dynamicRegistration = true, relatedDocumentSupport = false },
-            publishDiagnostics = new { relatedInformation = true, versionSupport = true },
+            _vs_supportsVisualStudioExtensions = true,
+            workspace = new { configuration = true, workspaceFolders = true },
+            textDocument = new
+            {
+                synchronization = new { dynamicRegistration = false, didSave = false, willSave = false, willSaveWaitUntil = false },
+                diagnostic = new { dynamicRegistration = true },
+                completion = new
+                {
+                    dynamicRegistration = true,
+                    completionItem = new { snippetSupport = false, preselectSupport = true },
+                },
+            },
+            window = new { workDoneProgress = false },
         },
-        window = new { workDoneProgress = false },
+        _ => throw new ArgumentOutOfRangeException(nameof(profile)),
     };
 
 

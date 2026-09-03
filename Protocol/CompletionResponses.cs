@@ -24,4 +24,6 @@ internal sealed record DocumentCompletionResponseItem(
     [property: JsonPropertyName("insertText")] string InsertText,
     [property: JsonPropertyName("filterText")] string FilterText,
     [property: JsonPropertyName("sortText")] string SortText,
-    [property: JsonPropertyName("preselect")] bool Preselect);
+    [property: JsonPropertyName("preselect")] bool Preselect,
+    [property: JsonPropertyName("semanticOrigin")] string SemanticOrigin,
+    [property: JsonPropertyName("inheritanceDepth")] int? InheritanceDepth);

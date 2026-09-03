@@ -4,6 +4,9 @@ param(
     [string] $RoslynRoot,
 
     [Parameter(Mandatory = $true)]
+    [string] $CanonicalSystemExplorerPatchPath,
+
+    [Parameter(Mandatory = $true)]
     [string] $OutputRoot
 )
 
@@ -11,11 +14,26 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $ExpectedCommit = '3aeb96c9ecc56a5ee483558f9e648e33e7bfe756'
+$ExpectedPatchSha256 = '11076630b66576961cfd3e56120b15c9e95b352e08f3f551053a79a647d2f2be'
+$MutationStarted = $false
+trap {
+    if ($MutationStarted) {
+        Write-Host 'Preparation failed after source mutation. The throwaway checkout is now modified; discard/reset the checkout before retry. No automatic reset/clean was performed.' -ForegroundColor Red
+    }
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
 $InstrumentationVersion = 1
 $TargetFileName = 'ProbeTarget.cs'
 
 $RoslynRoot = [System.IO.Path]::GetFullPath($RoslynRoot)
+$CanonicalSystemExplorerPatchPath = [System.IO.Path]::GetFullPath($CanonicalSystemExplorerPatchPath)
 $OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
+$PathComparison = if ($env:OS -eq 'Windows_NT') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+$RoslynRootWithSeparator = $RoslynRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+if ([string]::Equals($OutputRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar), $RoslynRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar), $PathComparison) -or $OutputRoot.StartsWith($RoslynRootWithSeparator, $PathComparison)) {
+    throw 'FAIL CLOSED: OutputRoot must be outside the throwaway Roslyn checkout.'
+}
 $TemplateRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $HelperTemplate = Join-Path $TemplateRoot 'SystemExplorerRoslynStateTrace.cs'
 
@@ -24,6 +42,13 @@ if (-not (Test-Path -LiteralPath $RoslynRoot -PathType Container)) {
 }
 if (-not (Test-Path -LiteralPath $HelperTemplate -PathType Leaf)) {
     throw "Instrumentation helper template does not exist: $HelperTemplate"
+}
+if (-not (Test-Path -LiteralPath $CanonicalSystemExplorerPatchPath -PathType Leaf)) {
+    throw "FAIL CLOSED: canonical SystemExplorer patch does not exist: $CanonicalSystemExplorerPatchPath"
+}
+$PatchHash = (Get-FileHash -LiteralPath $CanonicalSystemExplorerPatchPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($PatchHash -ne $ExpectedPatchSha256) {
+    throw "FAIL CLOSED: canonical SystemExplorer patch SHA-256 mismatch; expected=$ExpectedPatchSha256 actual=$PatchHash"
 }
 
 $Head = (& git -C $RoslynRoot rev-parse HEAD 2>&1 | Out-String).Trim()
@@ -41,6 +66,8 @@ if (-not [string]::IsNullOrWhiteSpace($Status)) {
 
 Write-Host "Verified throwaway Roslyn checkout: $ExpectedCommit"
 Write-Host 'Verified clean worktree. No commit will be created.'
+& git -C $RoslynRoot apply --check -- $CanonicalSystemExplorerPatchPath
+if ($LASTEXITCODE -ne 0) { throw 'FAIL CLOSED: canonical SystemExplorer patch failed git apply --check while checkout was pristine.' }
 
 $Paths = @{
     DidChange = 'src/LanguageServer/Protocol/Handler/DocumentChanges/DidChangeHandler.cs'
@@ -86,9 +113,11 @@ function Replace-ExactlyOnceInMemory([string] $Text, [string] $Anchor, [string] 
 
 # Read all affected pinned files first. Every source transformation is validated in memory before any write occurs.
 $Pending = @{}
+$Original = @{}
 foreach ($entry in $Paths.GetEnumerator()) {
     $absolute = Join-Path $RoslynRoot $entry.Value
-    $Pending[$entry.Key] = [System.IO.File]::ReadAllText($absolute)
+    $Original[$entry.Key] = [System.IO.File]::ReadAllText($absolute)
+    $Pending[$entry.Key] = $Original[$entry.Key]
 }
 
 $Anchor = @'
@@ -284,7 +313,7 @@ $Anchor = @'
 '@
 $Replacement = @'
         // We don't need SemanticModel here, just want to make sure it won't get GC'd before CompletionProviders are able to get it.
-        SystemExplorerRoslynStateTrace.TraceSolution("completion.pre_freeze", document.Project.Solution, document.Id);
+        await SystemExplorerRoslynStateTrace.TracePreFreezeAsync(document.Project.Solution, document.Id, cancellationToken).ConfigureAwait(false);
         document = GetDocumentWithFrozenPartialSemantics(document, cancellationToken);
         SystemExplorerRoslynStateTrace.TraceSolution("completion.post_freeze", document.Project.Solution, document.Id);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
@@ -362,7 +391,19 @@ if ($LASTEXITCODE -ne 0 -or $PostRestoreHead -ne $ExpectedCommit -or -not [strin
     throw 'FAIL CLOSED: repository-native restore changed or dirtied the pinned Roslyn checkout; no instrumentation source has been written.'
 }
 
-# Only after commit/worktree/anchors/restore are all verified do we perform local instrumentation writes.
+$MutationStarted = $true
+& git -C $RoslynRoot apply -- $CanonicalSystemExplorerPatchPath
+if ($LASTEXITCODE -ne 0) {
+    throw 'FAIL CLOSED: canonical SystemExplorer patch application failed. Throwaway checkout is now modified; discard/reset before retry.'
+}
+foreach ($entry in $Paths.GetEnumerator()) {
+    $canonicalPatchedText = [System.IO.File]::ReadAllText((Join-Path $RoslynRoot $entry.Value))
+    if (-not [string]::Equals($canonicalPatchedText, $Original[$entry.Key], [System.StringComparison]::Ordinal)) {
+        throw "FAIL CLOSED: canonical patch unexpectedly changed instrumentation anchor file $($entry.Value). Throwaway checkout is now modified; discard/reset before retry."
+    }
+}
+
+# Only after pristine restore, canonical patch application, and exact canonical-patched anchor revalidation do we write instrumentation.
 foreach ($entry in $Paths.GetEnumerator()) {
     $absolute = Join-Path $RoslynRoot $entry.Value
     [System.IO.File]::WriteAllText($absolute, $Pending[$entry.Key], [System.Text.UTF8Encoding]::new($false))
@@ -423,6 +464,8 @@ $Provenance = [ordered]@{
     instrumentationVersion = $InstrumentationVersion
     repository = 'dotnet/roslyn'
     baseCommit = $ExpectedCommit
+    baselineDistributionId = 'roslyn-3aeb96c9-systemexplorer-405fb7f9860-win-x64-v1'
+    canonicalSystemExplorerPatchSha256 = $ExpectedPatchSha256
     serverCommandPath = $WrapperPath
     targetFileName = $TargetFileName
 }

@@ -9,6 +9,8 @@
   <ItemGroup>
     <Compile Remove="Instrumentation/RoslynStateTrace/SystemExplorerRoslynStateTrace.cs" />
     <None Include="Instrumentation/RoslynStateTrace/SystemExplorerRoslynStateTrace.cs" />
+    <Compile Remove="Instrumentation/CompletionSemanticOrigin/SystemExplorerCompletionSemanticOrigin.cs" />
+    <None Include="Instrumentation/CompletionSemanticOrigin/SystemExplorerCompletionSemanticOrigin.cs" />
     <PackageReference Include="StreamJsonRpc" Version="2.25.29" />
   </ItemGroup>
 </Project>

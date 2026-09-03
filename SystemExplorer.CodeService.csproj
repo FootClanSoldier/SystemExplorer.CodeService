@@ -22,9 +22,13 @@
 
     <PrivateRoslynRuntimeSourceDirectory>$(MSBuildProjectDirectory)/ThirdParty/RoslynLanguageServer/win-x64</PrivateRoslynRuntimeSourceDirectory>
     <PrivateRoslynServerDll>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.dll</PrivateRoslynServerDll>
+    <PrivateRoslynFeaturesDll>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.Features.dll</PrivateRoslynFeaturesDll>
+    <PrivateRoslynLanguageServerProtocolDll>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.Protocol.dll</PrivateRoslynLanguageServerProtocolDll>
     <PrivateRoslynDepsJson>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.deps.json</PrivateRoslynDepsJson>
     <PrivateRoslynRuntimeConfigJson>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json</PrivateRoslynRuntimeConfigJson>
-    <PrivateRoslynServerDllSha256>4012B886966A1384E2371186E7C38AA5AF8ED26072DBBD5CA739F2C4470A7467</PrivateRoslynServerDllSha256>
+    <PrivateRoslynServerDllSha256>DB83A3FCB26E4F4F0F9DD1BA693C11FF876285DE549B8CC8915D83AA86637688</PrivateRoslynServerDllSha256>
+    <PrivateRoslynFeaturesDllSha256>74DF1223BF125E3CF36B094F83EA13486D60F932E1F32D2B8567EC3BE87ABF9D</PrivateRoslynFeaturesDllSha256>
+    <PrivateRoslynLanguageServerProtocolDllSha256>728DB91BF1828BE78E876FCFF25BCCC5AEB17311DD83CE8CD2D74640F1B940BC</PrivateRoslynLanguageServerProtocolDllSha256>
 
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
@@ -59,6 +63,10 @@
   <Target Name="ValidatePrivateRoslynRuntimeForPack" BeforeTargets="Pack">
     <Error Condition="!Exists('$(PrivateRoslynServerDll)')"
            Text="Private Roslyn runtime is missing Microsoft.CodeAnalysis.LanguageServer.dll." />
+    <Error Condition="!Exists('$(PrivateRoslynFeaturesDll)')"
+           Text="Private Roslyn runtime is missing Microsoft.CodeAnalysis.Features.dll." />
+    <Error Condition="!Exists('$(PrivateRoslynLanguageServerProtocolDll)')"
+           Text="Private Roslyn runtime is missing Microsoft.CodeAnalysis.LanguageServer.Protocol.dll." />
     <Error Condition="!Exists('$(PrivateRoslynDepsJson)')"
            Text="Private Roslyn runtime is missing Microsoft.CodeAnalysis.LanguageServer.deps.json." />
     <Error Condition="!Exists('$(PrivateRoslynRuntimeConfigJson)')"
@@ -76,9 +84,23 @@
                  Condition="Exists('$(PrivateRoslynServerDll)')">
       <Output TaskParameter="Items" ItemName="_PrivateRoslynServerHash" />
     </GetFileHash>
+    <GetFileHash Files="$(PrivateRoslynFeaturesDll)"
+                 Algorithm="SHA256"
+                 Condition="Exists('$(PrivateRoslynFeaturesDll)')">
+      <Output TaskParameter="Items" ItemName="_PrivateRoslynFeaturesHash" />
+    </GetFileHash>
+    <GetFileHash Files="$(PrivateRoslynLanguageServerProtocolDll)"
+                 Algorithm="SHA256"
+                 Condition="Exists('$(PrivateRoslynLanguageServerProtocolDll)')">
+      <Output TaskParameter="Items" ItemName="_PrivateRoslynLanguageServerProtocolHash" />
+    </GetFileHash>
 
     <Error Condition="Exists('$(PrivateRoslynServerDll)') and '@(_PrivateRoslynServerHash->'%(FileHash)')' != '$(PrivateRoslynServerDllSha256)'"
            Text="Private Roslyn Language Server DLL SHA-256 mismatch. Expected $(PrivateRoslynServerDllSha256), actual @(_PrivateRoslynServerHash->'%(FileHash)')." />
+    <Error Condition="Exists('$(PrivateRoslynFeaturesDll)') and '@(_PrivateRoslynFeaturesHash->'%(FileHash)')' != '$(PrivateRoslynFeaturesDllSha256)'"
+           Text="Private Roslyn Features DLL SHA-256 mismatch. Expected $(PrivateRoslynFeaturesDllSha256), actual @(_PrivateRoslynFeaturesHash->'%(FileHash)')." />
+    <Error Condition="Exists('$(PrivateRoslynLanguageServerProtocolDll)') and '@(_PrivateRoslynLanguageServerProtocolHash->'%(FileHash)')' != '$(PrivateRoslynLanguageServerProtocolDllSha256)'"
+           Text="Private Roslyn LanguageServer.Protocol DLL SHA-256 mismatch. Expected $(PrivateRoslynLanguageServerProtocolDllSha256), actual @(_PrivateRoslynLanguageServerProtocolHash->'%(FileHash)')." />
   </Target>
 
 </Project>

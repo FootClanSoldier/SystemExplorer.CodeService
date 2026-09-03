@@ -1,9 +1,18 @@
 namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe;
 
+internal enum ProbeRunMode
+{
+    FullCapability,
+    CompletionSemanticOriginOnly,
+}
+
 internal sealed record ProbeOptions(
-    string ServerCommandPath,
+    ProbeRunMode RunMode,
+    string? ServerCommandPath,
     string? StateTraceServerPath,
     string? StateTraceProvenancePath,
+    string? SemanticOriginServerPath,
+    string? SemanticOriginProvenancePath,
     string? SolutionPath,
     string? ProjectPath,
     string? DocumentPath,
@@ -21,12 +30,15 @@ internal sealed record ProbeOptions(
     public bool DefinitionSmokeSelected => DefinitionLine is not null && DefinitionCharacter is not null && ExpectedDefinitionPath is not null;
     public bool FullRealSemanticValidationSelected => CompletionSmokeSelected && DefinitionSmokeSelected;
     public bool StateTraceSelected => StateTraceServerPath is not null && StateTraceProvenancePath is not null;
+    public bool SemanticOriginSelected => SemanticOriginServerPath is not null && SemanticOriginProvenancePath is not null;
 
     public static ProbeOptionsParseResult TryParse(string[] args)
     {
         string? server = null;
         string? stateTraceServer = null;
         string? stateTraceProvenance = null;
+        string? semanticOriginServer = null;
+        string? semanticOriginProvenance = null;
         string? solution = null;
         string? project = null;
         string? document = null;
@@ -39,12 +51,18 @@ internal sealed record ProbeOptions(
         bool keepArtifacts = false;
         bool autoLoad = true;
         bool stale = false;
+        bool semanticOriginOnly = false;
+        bool noAutoLoadOptionSpecified = false;
+        bool staleOptionSpecified = false;
 
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
             switch (arg)
             {
+                case "--semantic-origin-only":
+                    semanticOriginOnly = true;
+                    break;
                 case "--server":
                     if (!TryTakeValue(args, ref i, out server))
                         return ProbeOptionsParseResult.Failure("--server requires a value.");
@@ -56,6 +74,14 @@ internal sealed record ProbeOptions(
                 case "--state-trace-provenance":
                     if (!TryTakeValue(args, ref i, out stateTraceProvenance))
                         return ProbeOptionsParseResult.Failure("--state-trace-provenance requires a value.");
+                    break;
+                case "--semantic-origin-server":
+                    if (!TryTakeValue(args, ref i, out semanticOriginServer))
+                        return ProbeOptionsParseResult.Failure("--semantic-origin-server requires a value.");
+                    break;
+                case "--semantic-origin-provenance":
+                    if (!TryTakeValue(args, ref i, out semanticOriginProvenance))
+                        return ProbeOptionsParseResult.Failure("--semantic-origin-provenance requires a value.");
                     break;
                 case "--solution":
                     if (!TryTakeValue(args, ref i, out solution))
@@ -98,9 +124,11 @@ internal sealed record ProbeOptions(
                     break;
                 case "--no-auto-load-comparison":
                     autoLoad = false;
+                    noAutoLoadOptionSpecified = true;
                     break;
                 case "--stale-version-experiment":
                     stale = true;
+                    staleOptionSpecified = true;
                     break;
                 case "--help":
                 case "-h":
@@ -108,6 +136,71 @@ internal sealed record ProbeOptions(
                 default:
                     return ProbeOptionsParseResult.Failure($"Unknown argument: {arg}");
             }
+        }
+
+        if (semanticOriginOnly)
+        {
+            string? invalidOnlyModeArgument = GetSemanticOriginOnlyInvalidArgument(
+                server,
+                stateTraceServer,
+                stateTraceProvenance,
+                solution,
+                project,
+                document,
+                completionLine,
+                completionCharacter,
+                definitionLine,
+                definitionCharacter,
+                expectedDefinition,
+                noAutoLoadOptionSpecified,
+                staleOptionSpecified);
+            if (invalidOnlyModeArgument is not null)
+            {
+                return ProbeOptionsParseResult.Failure(
+                    $"{invalidOnlyModeArgument} is not valid with --semantic-origin-only.");
+            }
+
+            bool anySemanticOriginOption = semanticOriginServer is not null || semanticOriginProvenance is not null;
+            if (!anySemanticOriginOption || semanticOriginServer is null || semanticOriginProvenance is null)
+            {
+                return ProbeOptionsParseResult.Failure(
+                    "--semantic-origin-only requires --semantic-origin-server and --semantic-origin-provenance together.");
+            }
+
+            if (!Path.IsPathFullyQualified(semanticOriginServer))
+                return ProbeOptionsParseResult.Failure("--semantic-origin-server must be an absolute path.");
+            if (!Path.IsPathFullyQualified(semanticOriginProvenance))
+                return ProbeOptionsParseResult.Failure("--semantic-origin-provenance must be an absolute path.");
+
+            semanticOriginServer = Path.GetFullPath(semanticOriginServer);
+            semanticOriginProvenance = Path.GetFullPath(semanticOriginProvenance);
+            if (report is not null)
+                report = Path.GetFullPath(report);
+
+            if (!File.Exists(semanticOriginServer))
+                return ProbeOptionsParseResult.Failure($"Semantic-origin server does not exist: {semanticOriginServer}");
+            if (!File.Exists(semanticOriginProvenance))
+                return ProbeOptionsParseResult.Failure($"Semantic-origin provenance does not exist: {semanticOriginProvenance}");
+
+            return ProbeOptionsParseResult.Success(new ProbeOptions(
+                ProbeRunMode.CompletionSemanticOriginOnly,
+                null,
+                null,
+                null,
+                semanticOriginServer,
+                semanticOriginProvenance,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                report,
+                keepArtifacts,
+                true,
+                false));
         }
 
         if (server is null)
@@ -124,6 +217,14 @@ internal sealed record ProbeOptions(
             return ProbeOptionsParseResult.Failure("--state-trace-server must be an absolute path.");
         if (stateTraceProvenance is not null && !Path.IsPathFullyQualified(stateTraceProvenance))
             return ProbeOptionsParseResult.Failure("--state-trace-provenance must be an absolute path.");
+
+        bool anyFullModeSemanticOriginOption = semanticOriginServer is not null || semanticOriginProvenance is not null;
+        if (anyFullModeSemanticOriginOption && (semanticOriginServer is null || semanticOriginProvenance is null))
+            return ProbeOptionsParseResult.Failure("--semantic-origin-server and --semantic-origin-provenance must be supplied together.");
+        if (semanticOriginServer is not null && !Path.IsPathFullyQualified(semanticOriginServer))
+            return ProbeOptionsParseResult.Failure("--semantic-origin-server must be an absolute path.");
+        if (semanticOriginProvenance is not null && !Path.IsPathFullyQualified(semanticOriginProvenance))
+            return ProbeOptionsParseResult.Failure("--semantic-origin-provenance must be an absolute path.");
 
         if (solution is not null && project is not null)
             return ProbeOptionsParseResult.Failure("Specify either --solution or --project, not both.");
@@ -162,6 +263,8 @@ internal sealed record ProbeOptions(
 
         if (stateTraceServer is not null) stateTraceServer = Path.GetFullPath(stateTraceServer);
         if (stateTraceProvenance is not null) stateTraceProvenance = Path.GetFullPath(stateTraceProvenance);
+        if (semanticOriginServer is not null) semanticOriginServer = Path.GetFullPath(semanticOriginServer);
+        if (semanticOriginProvenance is not null) semanticOriginProvenance = Path.GetFullPath(semanticOriginProvenance);
         if (solution is not null) solution = Path.GetFullPath(solution);
         if (project is not null) project = Path.GetFullPath(project);
         if (document is not null) document = Path.GetFullPath(document);
@@ -172,6 +275,10 @@ internal sealed record ProbeOptions(
             return ProbeOptionsParseResult.Failure($"State trace server does not exist: {stateTraceServer}");
         if (stateTraceProvenance is not null && !File.Exists(stateTraceProvenance))
             return ProbeOptionsParseResult.Failure($"State trace provenance does not exist: {stateTraceProvenance}");
+        if (semanticOriginServer is not null && !File.Exists(semanticOriginServer))
+            return ProbeOptionsParseResult.Failure($"Semantic-origin server does not exist: {semanticOriginServer}");
+        if (semanticOriginProvenance is not null && !File.Exists(semanticOriginProvenance))
+            return ProbeOptionsParseResult.Failure($"Semantic-origin provenance does not exist: {semanticOriginProvenance}");
         if (solution is not null && !File.Exists(solution))
             return ProbeOptionsParseResult.Failure($"Solution does not exist: {solution}");
         if (solution is not null && !IsExtension(solution, ".sln", ".slnx"))
@@ -190,9 +297,12 @@ internal sealed record ProbeOptions(
             return ProbeOptionsParseResult.Failure("--expected-definition must point to an existing .cs file.");
 
         return ProbeOptionsParseResult.Success(new ProbeOptions(
+            ProbeRunMode.FullCapability,
             server,
             stateTraceServer,
             stateTraceProvenance,
+            semanticOriginServer,
+            semanticOriginProvenance,
             solution,
             project,
             document,
@@ -205,6 +315,37 @@ internal sealed record ProbeOptions(
             keepArtifacts,
             autoLoad,
             stale));
+    }
+
+    private static string? GetSemanticOriginOnlyInvalidArgument(
+        string? server,
+        string? stateTraceServer,
+        string? stateTraceProvenance,
+        string? solution,
+        string? project,
+        string? document,
+        int? completionLine,
+        int? completionCharacter,
+        int? definitionLine,
+        int? definitionCharacter,
+        string? expectedDefinition,
+        bool noAutoLoadOptionSpecified,
+        bool staleOptionSpecified)
+    {
+        if (server is not null) return "--server";
+        if (stateTraceServer is not null) return "--state-trace-server";
+        if (stateTraceProvenance is not null) return "--state-trace-provenance";
+        if (solution is not null) return "--solution";
+        if (project is not null) return "--project";
+        if (document is not null) return "--document";
+        if (completionLine is not null) return "--completion-line";
+        if (completionCharacter is not null) return "--completion-character";
+        if (definitionLine is not null) return "--definition-line";
+        if (definitionCharacter is not null) return "--definition-character";
+        if (expectedDefinition is not null) return "--expected-definition";
+        if (staleOptionSpecified) return "--stale-version-experiment";
+        if (noAutoLoadOptionSpecified) return "--no-auto-load-comparison";
+        return null;
     }
 
     private static bool IsExtension(string path, params string[] extensions) =>

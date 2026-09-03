@@ -8,6 +8,8 @@ internal sealed record RoslynStateTraceProvenance(
     [property: JsonPropertyName("instrumentationVersion")] int InstrumentationVersion,
     [property: JsonPropertyName("repository")] string Repository,
     [property: JsonPropertyName("baseCommit")] string BaseCommit,
+    [property: JsonPropertyName("baselineDistributionId")] string BaselineDistributionId,
+    [property: JsonPropertyName("canonicalSystemExplorerPatchSha256")] string CanonicalSystemExplorerPatchSha256,
     [property: JsonPropertyName("serverCommandPath")] string ServerCommandPath,
     [property: JsonPropertyName("targetFileName")] string TargetFileName)
 {
@@ -36,6 +38,10 @@ internal sealed record RoslynStateTraceProvenance(
             throw new InvalidDataException($"Unexpected state trace repository: {provenance.Repository}");
         if (!string.Equals(provenance.BaseCommit, ProbeConstants.RoslynSourceCommit, StringComparison.Ordinal))
             throw new InvalidDataException($"Unexpected state trace baseCommit: {provenance.BaseCommit}");
+        if (!string.Equals(provenance.BaselineDistributionId, ProbeConstants.RoslynBaselineDistributionId, StringComparison.Ordinal))
+            throw new InvalidDataException($"Unexpected state trace baselineDistributionId: {provenance.BaselineDistributionId}");
+        if (!string.Equals(provenance.CanonicalSystemExplorerPatchSha256, ProbeConstants.CanonicalSystemExplorerPatchSha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Unexpected state trace canonical SystemExplorer patch SHA-256.");
         if (!string.Equals(provenance.TargetFileName, "ProbeTarget.cs", StringComparison.Ordinal))
             throw new InvalidDataException($"Unexpected state trace targetFileName: {provenance.TargetFileName}");
         if (!Path.IsPathFullyQualified(provenance.ServerCommandPath))

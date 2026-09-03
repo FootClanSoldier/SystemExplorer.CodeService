@@ -7,6 +7,24 @@ namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe;
 
 internal static class Program
 {
+    private static readonly IReadOnlyDictionary<string, string> SemanticOriginSummaryNames =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["SemanticOriginLocalObserved"] = "Local",
+            ["SemanticOriginParameterObserved"] = "Parameter",
+            ["SemanticOriginLocalFunctionObserved"] = "LocalFunction",
+            ["SemanticOriginCurrentTypeDepthObserved"] = "CurrentType depth=0",
+            ["SemanticOriginBaseDepth1Observed"] = "BaseType depth=1",
+            ["SemanticOriginBaseDepth2Observed"] = "BaseType depth=2",
+            ["SemanticOriginOtherUserCodeObserved"] = "OtherUserCode",
+            ["SemanticOriginSourceExtensionObserved"] = "SourceExtension",
+            ["SemanticOriginFrameworkObserved"] = "FrameworkOrOther",
+            ["SemanticOriginUnknownNonSymbolControlObserved"] = "UnknownNonSymbol",
+            ["SemanticOriginMetadataWellFormed"] = "MetadataWellFormed",
+            ["SemanticOriginServerSurvived"] = "ServerSurvived",
+            ["SemanticOriginGracefulRetirement"] = "GracefulRetirement",
+        };
+
     private static async Task<int> Main(string[] args)
     {
         ProbeOptionsParseResult parsed = ProbeOptions.TryParse(args);
@@ -34,21 +52,11 @@ internal static class Program
         try
         {
             ProbeOptions options = parsed.Options!;
-            RoslynLanguageServerToolVerificationResult toolVerification = await RoslynLanguageServerToolVerifier.VerifyAsync(
-                options.ServerCommandPath,
-                cancellation.Token).ConfigureAwait(false);
-            RoslynLanguageServerLaunchSpec launchSpec = RoslynLanguageServerLaunchSpec.Create(toolVerification);
-
-            ProbeScenarioRunner runner = new(options, toolVerification, launchSpec);
-            ProbeReport report = await runner.RunAsync(cancellation.Token).ConfigureAwait(false);
-            string reportPath = await ProbeReportWriter.WriteAsync(report, options, CancellationToken.None).ConfigureAwait(false);
-            PrintSummary(report, reportPath);
-
-            return report.OverallDecision switch
+            return options.RunMode switch
             {
-                ProbeOverallDecision.UnsuitableCandidate => ProbeConstants.CapabilityFailureExitCode,
-                ProbeOverallDecision.Inconclusive => ProbeConstants.InfrastructureFailureExitCode,
-                _ => ProbeConstants.SuccessExitCode,
+                ProbeRunMode.FullCapability => await RunFullCapabilityAsync(options, cancellation.Token).ConfigureAwait(false),
+                ProbeRunMode.CompletionSemanticOriginOnly => await RunCompletionSemanticOriginOnlyAsync(options, cancellation.Token).ConfigureAwait(false),
+                _ => throw new InvalidOperationException($"Unsupported probe run mode: {options.RunMode}"),
             };
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -77,14 +85,61 @@ internal static class Program
         }
     }
 
+    private static async Task<int> RunFullCapabilityAsync(ProbeOptions options, CancellationToken cancellationToken)
+    {
+        RoslynLanguageServerToolVerificationResult toolVerification = await RoslynLanguageServerToolVerifier.VerifyAsync(
+            options.ServerCommandPath!,
+            cancellationToken).ConfigureAwait(false);
+        RoslynLanguageServerLaunchSpec launchSpec = RoslynLanguageServerLaunchSpec.Create(toolVerification);
+
+        ProbeScenarioRunner runner = new(options, toolVerification, launchSpec);
+        ProbeReport report = await runner.RunAsync(cancellationToken).ConfigureAwait(false);
+        string reportPath = await ProbeReportWriter.WriteAsync(report, options, CancellationToken.None).ConfigureAwait(false);
+        PrintSummary(report, reportPath);
+
+        return report.OverallDecision switch
+        {
+            ProbeOverallDecision.UnsuitableCandidate => ProbeConstants.CapabilityFailureExitCode,
+            ProbeOverallDecision.Inconclusive => ProbeConstants.InfrastructureFailureExitCode,
+            _ => ProbeConstants.SuccessExitCode,
+        };
+    }
+
+    private static async Task<int> RunCompletionSemanticOriginOnlyAsync(
+        ProbeOptions options,
+        CancellationToken cancellationToken)
+    {
+        CompletionSemanticOriginVerificationRunner runner = new(options);
+        CompletionSemanticOriginVerificationReport report = await runner.RunAsync(cancellationToken).ConfigureAwait(false);
+        string reportPath = await CompletionSemanticOriginVerificationReportWriter.WriteAsync(
+            report,
+            options,
+            CancellationToken.None).ConfigureAwait(false);
+        PrintCompletionSemanticOriginSummary(report, reportPath);
+
+        return report.Scenario.Status switch
+        {
+            ProbeScenarioStatus.Pass => ProbeConstants.SuccessExitCode,
+            ProbeScenarioStatus.Fail => ProbeConstants.CapabilityFailureExitCode,
+            ProbeScenarioStatus.Skipped => ProbeConstants.InfrastructureFailureExitCode,
+            _ => ProbeConstants.InfrastructureFailureExitCode,
+        };
+    }
+
     private static void PrintUsage()
     {
         Console.WriteLine(
-            "Usage: RoslynLanguageServerCapabilityProbe --server <absolute-path> " +
-            "[--state-trace-server <absolute-path> --state-trace-provenance <absolute-path>] [--solution <.sln|.slnx> | --project <.csproj>] " +
+            "Full capability mode:\n" +
+            "  RoslynLanguageServerCapabilityProbe --server <absolute-path> " +
+            "[--state-trace-server <absolute-path> --state-trace-provenance <absolute-path>] " +
+            "[--semantic-origin-server <absolute-path> --semantic-origin-provenance <absolute-path>] [--solution <.sln|.slnx> | --project <.csproj>] " +
             "[--document <.cs> [--completion-line <n> --completion-character <n>] " +
             "[--definition-line <n> --definition-character <n> --expected-definition <.cs>]] " +
-            "[--report <path>] [--keep-artifacts] [--no-auto-load-comparison] [--stale-version-experiment]");
+            "[--report <path>] [--keep-artifacts] [--no-auto-load-comparison] [--stale-version-experiment]\n\n" +
+            "Completion semantic-origin verification mode:\n" +
+            "  RoslynLanguageServerCapabilityProbe --semantic-origin-only " +
+            "--semantic-origin-server <absolute-path> --semantic-origin-provenance <absolute-path> " +
+            "[--report <path>] [--keep-artifacts]");
     }
 
     private static void PrintSummary(ProbeReport report, string reportPath)
@@ -99,6 +154,44 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine($"Candidate: {report.OverallDecision}");
         Console.WriteLine($"Report: {reportPath}");
+    }
+
+    private static void PrintCompletionSemanticOriginSummary(
+        CompletionSemanticOriginVerificationReport report,
+        string reportPath)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Completion Semantic Origin Verification");
+        Console.WriteLine();
+
+        HashSet<string> rendered = new(StringComparer.Ordinal);
+        foreach (ProbeCheckResult check in report.Scenario.Checks)
+        {
+            if (!SemanticOriginSummaryNames.TryGetValue(check.Name, out string? displayName))
+                continue;
+
+            PrintSemanticOriginCheck(check, displayName);
+            rendered.Add(check.Name);
+        }
+
+        foreach (ProbeCheckResult failedCheck in report.Scenario.Checks.Where(static check => !check.Passed))
+        {
+            if (rendered.Contains(failedCheck.Name))
+                continue;
+
+            PrintSemanticOriginCheck(failedCheck, failedCheck.Name);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"RESULT: {(report.Passed ? "PASS" : "FAIL")}");
+        Console.WriteLine($"Report: {reportPath}");
+    }
+
+    private static void PrintSemanticOriginCheck(ProbeCheckResult check, string displayName)
+    {
+        Console.WriteLine($"{(check.Passed ? "PASS" : "FAIL"),-5} {displayName}");
+        if (!check.Passed && !string.IsNullOrWhiteSpace(check.Details))
+            Console.WriteLine($"      {check.Details}");
     }
 }
 

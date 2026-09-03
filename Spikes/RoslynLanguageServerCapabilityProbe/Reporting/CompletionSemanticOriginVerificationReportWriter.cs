@@ -2,10 +2,10 @@ using System.Text.Json;
 
 namespace SystemExplorer.CodeService.Spikes.RoslynLanguageServerCapabilityProbe.Reporting;
 
-internal static class ProbeReportWriter
+internal static class CompletionSemanticOriginVerificationReportWriter
 {
     public static async Task<string> WriteAsync(
-        ProbeReport report,
+        CompletionSemanticOriginVerificationReport report,
         ProbeOptions options,
         CancellationToken cancellationToken)
     {
@@ -26,6 +26,6 @@ internal static class ProbeReportWriter
             Path.GetTempPath(),
             "SystemExplorer.CodeService",
             "RoslynProbe");
-        return Path.Combine(directory, $"roslyn_probe_{startedAtUtc:yyyyMMdd_HHmmss_fff}.json");
+        return Path.Combine(directory, $"completion_semantic_origin_{startedAtUtc:yyyyMMdd_HHmmss_fff}.json");
     }
 }

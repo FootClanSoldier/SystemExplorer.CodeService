@@ -8,6 +8,8 @@ namespace SystemExplorer.CodeService;
 internal sealed class RoslynLspClient : IAsyncDisposable
 {
     private const string VsResolveTextEditOnCommitPropertyName = "_vs_resolveTextEditOnCommit";
+    private const string SystemExplorerCompletionSemanticOriginPropertyName = "_systemExplorer_completionSemanticOrigin";
+    private const string SystemExplorerCompletionInheritanceDepthPropertyName = "_systemExplorer_completionInheritanceDepth";
 
     private readonly RoslynLanguageServerProcess _process;
     private readonly string _serviceVersion;
@@ -326,6 +328,14 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                 continue;
             }
 
+            if (!TryNormalizeSemanticOriginMetadata(
+                    item,
+                    out CompletionSemanticOrigin semanticOrigin,
+                    out int? inheritanceDepth))
+            {
+                return RoslynCompletionClientResult.Malformed();
+            }
+
             string filterText = label;
             if (item.TryGetProperty("filterText", out JsonElement filterTextElement)
                 && filterTextElement.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
@@ -477,11 +487,86 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                 kind = kindValue;
             }
 
-            normalized.Add(new RoslynCompletionItem(label, insertText, kind, filterText, sortText, preselect));
+            normalized.Add(new RoslynCompletionItem(
+                label,
+                insertText,
+                kind,
+                filterText,
+                sortText,
+                preselect,
+                semanticOrigin,
+                inheritanceDepth));
             normalizedTextUtf8Bytes += itemTextBytes;
         }
 
         return RoslynCompletionClientResult.Success(normalized, isIncomplete, rawItemCount);
+    }
+
+    private static bool TryNormalizeSemanticOriginMetadata(
+        JsonElement item,
+        out CompletionSemanticOrigin semanticOrigin,
+        out int? inheritanceDepth)
+    {
+        semanticOrigin = CompletionSemanticOrigin.Unknown;
+        inheritanceDepth = null;
+
+        bool hasOrigin = item.TryGetProperty(
+            SystemExplorerCompletionSemanticOriginPropertyName,
+            out JsonElement originElement);
+        bool hasInheritanceDepth = item.TryGetProperty(
+            SystemExplorerCompletionInheritanceDepthPropertyName,
+            out JsonElement inheritanceDepthElement);
+
+        if (!hasOrigin)
+        {
+            return !hasInheritanceDepth;
+        }
+
+        if (originElement.ValueKind != JsonValueKind.String
+            || originElement.GetString() is not string originText)
+        {
+            return false;
+        }
+
+        CompletionSemanticOrigin? parsedOrigin = originText switch
+        {
+            "Unknown" => CompletionSemanticOrigin.Unknown,
+            "Local" => CompletionSemanticOrigin.Local,
+            "CurrentType" => CompletionSemanticOrigin.CurrentType,
+            "BaseType" => CompletionSemanticOrigin.BaseType,
+            "OtherUserCode" => CompletionSemanticOrigin.OtherUserCode,
+            "FrameworkOrOther" => CompletionSemanticOrigin.FrameworkOrOther,
+            _ => null,
+        };
+
+        if (parsedOrigin is null)
+        {
+            return false;
+        }
+
+        semanticOrigin = parsedOrigin.Value;
+
+        if (hasInheritanceDepth)
+        {
+            if (inheritanceDepthElement.ValueKind != JsonValueKind.Number
+                || !inheritanceDepthElement.TryGetInt32(out int parsedDepth))
+            {
+                return false;
+            }
+
+            inheritanceDepth = parsedDepth;
+        }
+
+        return semanticOrigin switch
+        {
+            CompletionSemanticOrigin.CurrentType => inheritanceDepth == 0,
+            CompletionSemanticOrigin.BaseType => inheritanceDepth is int depth && depth >= 1,
+            CompletionSemanticOrigin.Unknown
+                or CompletionSemanticOrigin.Local
+                or CompletionSemanticOrigin.OtherUserCode
+                or CompletionSemanticOrigin.FrameworkOrOther => inheritanceDepth is null,
+            _ => false,
+        };
     }
 
     private static bool TryGetBoundedUtf8ByteCount(string value, int maximumBytes, out int byteCount)
@@ -567,7 +652,7 @@ internal sealed class RoslynLspClient : IAsyncDisposable
         {
             // Roslyn's public LSP completion shape intentionally defers complex text edits to
             // completionItem/resolve without exposing a generic "complex edit" discriminator.
-            // The VS extension marker lets this v1 client fail closed on those items instead of
+            // The VS extension marker lets this commit-safe client fail closed on those items instead of
             // misrepresenting them as plain insertText completions. No VS command/resolve payload
             // is executed by CodeService.
             _vs_supportsVisualStudioExtensions = true,
@@ -657,7 +742,9 @@ internal sealed record RoslynCompletionItem(
     int? Kind,
     string FilterText,
     string SortText,
-    bool Preselect);
+    bool Preselect,
+    CompletionSemanticOrigin SemanticOrigin,
+    int? InheritanceDepth);
 
 internal enum RoslynCompletionClientOutcome
 {

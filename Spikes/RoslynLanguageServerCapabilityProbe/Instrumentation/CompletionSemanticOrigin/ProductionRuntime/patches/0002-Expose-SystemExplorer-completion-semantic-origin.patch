@@ -1,0 +1,178 @@
+diff --git a/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs b/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs
+--- a/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs
++++ b/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs
+@@ -181,6 +181,10 @@ internal abstract partial class AbstractSymbolCompletionProvider<TSyntaxContext>
+                 var supportedPlatformData = ComputeSupportedPlatformData(completionContext, symbolList, invalidProjectMap, totalProjects);
+                 var item = CreateItem(
+                     completionContext, symbolGroup.Key.displayText, symbolGroup.Key.suffix, symbolGroup.Key.insertionText, symbolList, arbitraryFirstContext, supportedPlatformData);
++                item = SystemExplorerCompletionSemanticOrigin.Attach(
++                    item,
++                    symbolList.SelectAsArray(static entry => entry.Symbol),
++                    arbitraryFirstContext);
+ 
+                 if (includeItemInTargetTypedCompletion)
+                 {
+diff --git a/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
+new file mode 100644
+--- /dev/null
++++ b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
+@@ -0,0 +1,92 @@
++using System.Collections.Immutable;
++using System.Linq;
++using Microsoft.CodeAnalysis.Shared.Extensions.ContextQuery;
++
++namespace Microsoft.CodeAnalysis.Completion.Providers;
++
++internal static class SystemExplorerCompletionSemanticOrigin
++{
++    internal const string OriginPropertyKey = "SystemExplorer.CompletionSemanticOrigin";
++    internal const string InheritanceDepthPropertyKey = "SystemExplorer.CompletionInheritanceDepth";
++
++    public static CompletionItem Attach(
++        CompletionItem item,
++        ImmutableArray<ISymbol> symbols,
++        SyntaxContext context)
++    {
++        if (symbols.IsDefaultOrEmpty)
++            return item.AddProperty(OriginPropertyKey, "Unknown");
++
++        OriginEvidence? aggregate = null;
++        foreach (ISymbol symbol in symbols)
++        {
++            OriginEvidence current = Classify(symbol, context);
++            if (aggregate is null)
++            {
++                aggregate = current;
++                continue;
++            }
++
++            if (aggregate.Value.Kind != current.Kind || aggregate.Value.InheritanceDepth != current.InheritanceDepth)
++                return item.AddProperty(OriginPropertyKey, "Unknown");
++        }
++
++        OriginEvidence evidence = aggregate ?? new("Unknown", null);
++        item = item.AddProperty(OriginPropertyKey, evidence.Kind);
++        return evidence.InheritanceDepth is int depth
++            ? item.AddProperty(InheritanceDepthPropertyKey, depth.ToString(System.Globalization.CultureInfo.InvariantCulture))
++            : item;
++    }
++
++    private static OriginEvidence Classify(ISymbol symbol, SyntaxContext context)
++    {
++        if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol
++            || symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction })
++        {
++            return new("Local", null);
++        }
++
++        if (symbol is IMethodSymbol { ReducedFrom: not null } reduced)
++            return ClassifyDeclarationAuthority(reduced.ReducedFrom);
++
++        ISymbol declaration = symbol;
++        INamedTypeSymbol? lexicalType = GetLexicalContainingType(context.SemanticModel, context.Position);
++        if (declaration.ContainingType is INamedTypeSymbol containingType && lexicalType is not null)
++        {
++            INamedTypeSymbol declarationType = containingType.OriginalDefinition;
++            INamedTypeSymbol current = lexicalType.OriginalDefinition;
++            if (SymbolEqualityComparer.Default.Equals(declarationType, current))
++                return new("CurrentType", 0);
++
++            int depth = 1;
++            for (INamedTypeSymbol? baseType = lexicalType.BaseType; baseType is not null; baseType = baseType.BaseType, depth++)
++            {
++                if (SymbolEqualityComparer.Default.Equals(declarationType, baseType.OriginalDefinition))
++                    return new("BaseType", depth);
++            }
++        }
++
++        return ClassifyDeclarationAuthority(declaration);
++    }
++
++    private static OriginEvidence ClassifyDeclarationAuthority(ISymbol declaration)
++    {
++        if (declaration.DeclaringSyntaxReferences.Length > 0 || declaration.Locations.Any(static location => location.IsInSource))
++            return new("OtherUserCode", null);
++        if (declaration.Locations.Any(static location => location.IsInMetadata))
++            return new("FrameworkOrOther", null);
++        return new("Unknown", null);
++    }
++
++    private static INamedTypeSymbol? GetLexicalContainingType(SemanticModel semanticModel, int position)
++    {
++        for (ISymbol? enclosing = semanticModel.GetEnclosingSymbol(position); enclosing is not null; enclosing = enclosing.ContainingSymbol)
++        {
++            if (enclosing is INamedTypeSymbol type)
++                return type;
++        }
++        return null;
++    }
++
++    private readonly record struct OriginEvidence(string Kind, int? InheritanceDepth);
++}
+diff --git a/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs b/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs
+--- a/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs
++++ b/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs
+@@ -120,6 +120,18 @@ internal static class CompletionResultFactory
+                 item,
+                 completionService,
+                 cancellationToken).ConfigureAwait(false);
++
++            if (lspItem is LSP.VSInternalCompletionItem systemExplorerVsItem)
++            {
++                if (item.Properties.TryGetValue("SystemExplorer.CompletionSemanticOrigin", out var systemExplorerOrigin))
++                    systemExplorerVsItem.SystemExplorerCompletionSemanticOrigin = systemExplorerOrigin;
++
++                if (item.Properties.TryGetValue("SystemExplorer.CompletionInheritanceDepth", out var systemExplorerDepthText)
++                    && int.TryParse(systemExplorerDepthText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var systemExplorerDepth))
++                {
++                    systemExplorerVsItem.SystemExplorerCompletionInheritanceDepth = systemExplorerDepth;
++                }
++            }
+ 
+             if (!item.InlineDescription.IsEmpty())
+                 lspItem.LabelDetails = new() { Description = item.InlineDescription };
+diff --git a/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs b/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs
+--- a/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs
++++ b/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs
+@@ -17,6 +17,8 @@ internal sealed class VSInternalCompletionItem : CompletionItem
+     internal const string VsCommitCharactersSerializedName = "_vs_commitCharacters";
+     internal const string VsResolveTextEditOnCommitName = "_vs_resolveTextEditOnCommit";
+     internal const string MatchPrioritySerializedName = "_vs_matchPriority";
++    internal const string SystemExplorerCompletionSemanticOriginSerializedName = "_systemExplorer_completionSemanticOrigin";
++    internal const string SystemExplorerCompletionInheritanceDepthSerializedName = "_systemExplorer_completionInheritanceDepth";
+ 
+     /// <summary>
+     /// Gets or sets the icon to show for the completion item. In VS, this is more extensive than the completion kind.
+@@ -61,4 +63,12 @@ internal sealed class VSInternalCompletionItem : CompletionItem
+     [JsonPropertyName(MatchPrioritySerializedName)]
+     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+     public int MatchPriority { get; set; }
++
++    [JsonPropertyName(SystemExplorerCompletionSemanticOriginSerializedName)]
++    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
++    public string? SystemExplorerCompletionSemanticOrigin { get; set; }
++
++    [JsonPropertyName(SystemExplorerCompletionInheritanceDepthSerializedName)]
++    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
++    public int? SystemExplorerCompletionInheritanceDepth { get; set; }
+ }
+diff --git a/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs b/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs
+--- a/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs
++++ b/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs
+@@ -143,6 +143,16 @@ internal sealed class OptimizedVSCompletionListJsonConverter : JsonConverter<Opt
+             {
+                 writer.WriteNumber(VSInternalCompletionItem.MatchPrioritySerializedName, vsCompletionItem.MatchPriority);
+             }
++
++            if (vsCompletionItem.SystemExplorerCompletionSemanticOrigin != null)
++            {
++                writer.WriteString(VSInternalCompletionItem.SystemExplorerCompletionSemanticOriginSerializedName, vsCompletionItem.SystemExplorerCompletionSemanticOrigin);
++            }
++
++            if (vsCompletionItem.SystemExplorerCompletionInheritanceDepth is int systemExplorerDepth)
++            {
++                writer.WriteNumber(VSInternalCompletionItem.SystemExplorerCompletionInheritanceDepthSerializedName, systemExplorerDepth);
++            }
+         }
+ 
+         var label = completionItem.Label;

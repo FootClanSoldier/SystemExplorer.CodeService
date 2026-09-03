@@ -11,12 +11,17 @@ internal enum RoslynLanguageServerRuntimeSource
 internal sealed class RoslynLanguageServerRuntime
 {
     public const string UpstreamCommit = "3aeb96c9ecc56a5ee483558f9e648e33e7bfe756";
-    public const string FixedDllSha256 = "4012B886966A1384E2371186E7C38AA5AF8ED26072DBBD5CA739F2C4470A7467";
-    public const string CanonicalFixPatchSha256 = "CB6D1A37CE530D40212CB7537A3A93BE1DA97FFA235CAF8520A5230BF028FE71";
-    public const string LocalFixCommit = "405fb7f9860";
-    public const string DistributionId = "roslyn-3aeb96c9-systemexplorer-405fb7f9860-win-x64-v1";
+    public const string SemanticReusePatchSha256 = "11076630B66576961CFD3E56120B15C9E95B352E08F3F551053A79A647D2F2BE";
+    public const string SemanticReuseSourceCommit = "405fb7f9860";
+    public const string CompletionSemanticOriginPatchSha256 = "6818CC1B3A10C97B31782CCE20B7590A4A7F1B39710D7B48DD5B234E1B3BC1FB";
+    public const string DistributionId = "roslyn-3aeb96c9-systemexplorer-6818cc1b3a10-win-x64-v2";
+    public const string LanguageServerDllSha256 = "DB83A3FCB26E4F4F0F9DD1BA693C11FF876285DE549B8CC8915D83AA86637688";
+    public const string FeaturesDllSha256 = "74DF1223BF125E3CF36B094F83EA13486D60F932E1F32D2B8567EC3BE87ABF9D";
+    public const string LanguageServerProtocolDllSha256 = "728DB91BF1828BE78E876FCFF25BCCC5AEB17311DD83CE8CD2D74640F1B940BC";
 
     private const string ServerDllFileName = "Microsoft.CodeAnalysis.LanguageServer.dll";
+    private const string FeaturesDllFileName = "Microsoft.CodeAnalysis.Features.dll";
+    private const string LanguageServerProtocolDllFileName = "Microsoft.CodeAnalysis.LanguageServer.Protocol.dll";
     private const string DepsFileName = "Microsoft.CodeAnalysis.LanguageServer.deps.json";
     private const string RuntimeConfigFileName = "Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json";
 
@@ -24,12 +29,16 @@ internal sealed class RoslynLanguageServerRuntime
         RoslynLanguageServerRuntimeSource runtimeSource,
         string runtimeDirectory,
         string serverDllPath,
+        string featuresDllPath,
+        string languageServerProtocolDllPath,
         string depsJsonPath,
         string runtimeConfigJsonPath)
     {
         RuntimeSource = runtimeSource;
         RuntimeDirectory = runtimeDirectory;
         ServerDllPath = serverDllPath;
+        FeaturesDllPath = featuresDllPath;
+        LanguageServerProtocolDllPath = languageServerProtocolDllPath;
         DepsJsonPath = depsJsonPath;
         RuntimeConfigJsonPath = runtimeConfigJsonPath;
     }
@@ -42,17 +51,27 @@ internal sealed class RoslynLanguageServerRuntime
 
     public string ServerDllPath { get; }
 
+    public string FeaturesDllPath { get; }
+
+    public string LanguageServerProtocolDllPath { get; }
+
     public string DepsJsonPath { get; }
 
     public string RuntimeConfigJsonPath { get; }
 
-    public string VerifiedDllSha256 => FixedDllSha256;
+    public string VerifiedLanguageServerDllSha256 => LanguageServerDllSha256;
+
+    public string VerifiedFeaturesDllSha256 => FeaturesDllSha256;
+
+    public string VerifiedLanguageServerProtocolDllSha256 => LanguageServerProtocolDllSha256;
 
     public string VerifiedUpstreamCommit => UpstreamCommit;
 
-    public string VerifiedCanonicalFixPatchSha256 => CanonicalFixPatchSha256;
+    public string VerifiedSemanticReusePatchSha256 => SemanticReusePatchSha256;
 
-    public string VerifiedLocalFixCommit => LocalFixCommit;
+    public string VerifiedSemanticReuseSourceCommit => SemanticReuseSourceCommit;
+
+    public string VerifiedCompletionSemanticOriginPatchSha256 => CompletionSemanticOriginPatchSha256;
 
     public static RoslynLanguageServerRuntimeValidationResult TryValidate(
         string? runtimeDirectory,
@@ -82,32 +101,48 @@ internal sealed class RoslynLanguageServerRuntime
             }
 
             string serverDllPath = Path.Combine(normalizedDirectory, ServerDllFileName);
+            string featuresDllPath = Path.Combine(normalizedDirectory, FeaturesDllFileName);
+            string languageServerProtocolDllPath = Path.Combine(normalizedDirectory, LanguageServerProtocolDllFileName);
             string depsJsonPath = Path.Combine(normalizedDirectory, DepsFileName);
             string runtimeConfigJsonPath = Path.Combine(normalizedDirectory, RuntimeConfigFileName);
 
-            if (!File.Exists(serverDllPath))
+            string? missingFile = GetMissingRequiredFile(
+                serverDllPath,
+                featuresDllPath,
+                languageServerProtocolDllPath,
+                depsJsonPath,
+                runtimeConfigJsonPath);
+            if (missingFile is not null)
             {
                 return RoslynLanguageServerRuntimeValidationResult.Failure(
-                    $"Roslyn runtime is missing required file '{ServerDllFileName}'.");
+                    $"Roslyn runtime is missing required file '{missingFile}'.");
             }
 
-            if (!File.Exists(depsJsonPath))
+            string? hashError = GetSha256MismatchError(
+                serverDllPath,
+                ServerDllFileName,
+                LanguageServerDllSha256);
+            if (hashError is not null)
             {
-                return RoslynLanguageServerRuntimeValidationResult.Failure(
-                    $"Roslyn runtime is missing required file '{DepsFileName}'.");
+                return RoslynLanguageServerRuntimeValidationResult.Failure(hashError);
             }
 
-            if (!File.Exists(runtimeConfigJsonPath))
+            hashError = GetSha256MismatchError(
+                featuresDllPath,
+                FeaturesDllFileName,
+                FeaturesDllSha256);
+            if (hashError is not null)
             {
-                return RoslynLanguageServerRuntimeValidationResult.Failure(
-                    $"Roslyn runtime is missing required file '{RuntimeConfigFileName}'.");
+                return RoslynLanguageServerRuntimeValidationResult.Failure(hashError);
             }
 
-            string actualHash = ComputeSha256(serverDllPath);
-            if (!string.Equals(actualHash, FixedDllSha256, StringComparison.OrdinalIgnoreCase))
+            hashError = GetSha256MismatchError(
+                languageServerProtocolDllPath,
+                LanguageServerProtocolDllFileName,
+                LanguageServerProtocolDllSha256);
+            if (hashError is not null)
             {
-                return RoslynLanguageServerRuntimeValidationResult.Failure(
-                    $"Roslyn Language Server DLL SHA-256 mismatch; expected {FixedDllSha256}, actual {actualHash}.");
+                return RoslynLanguageServerRuntimeValidationResult.Failure(hashError);
             }
 
             return RoslynLanguageServerRuntimeValidationResult.Success(
@@ -115,6 +150,8 @@ internal sealed class RoslynLanguageServerRuntime
                     runtimeSource,
                     normalizedDirectory,
                     serverDllPath,
+                    featuresDllPath,
+                    languageServerProtocolDllPath,
                     depsJsonPath,
                     runtimeConfigJsonPath));
         }
@@ -123,6 +160,48 @@ internal sealed class RoslynLanguageServerRuntime
             return RoslynLanguageServerRuntimeValidationResult.Failure(
                 $"Roslyn runtime validation failed: {ToSingleLine(exception.Message)}");
         }
+    }
+
+    private static string? GetMissingRequiredFile(
+        string serverDllPath,
+        string featuresDllPath,
+        string languageServerProtocolDllPath,
+        string depsJsonPath,
+        string runtimeConfigJsonPath)
+    {
+        if (!File.Exists(serverDllPath))
+        {
+            return ServerDllFileName;
+        }
+        if (!File.Exists(featuresDllPath))
+        {
+            return FeaturesDllFileName;
+        }
+        if (!File.Exists(languageServerProtocolDllPath))
+        {
+            return LanguageServerProtocolDllFileName;
+        }
+        if (!File.Exists(depsJsonPath))
+        {
+            return DepsFileName;
+        }
+        if (!File.Exists(runtimeConfigJsonPath))
+        {
+            return RuntimeConfigFileName;
+        }
+
+        return null;
+    }
+
+    private static string? GetSha256MismatchError(
+        string path,
+        string fileName,
+        string expectedHash)
+    {
+        string actualHash = ComputeSha256(path);
+        return string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : $"Roslyn runtime file '{fileName}' SHA-256 mismatch; expected {expectedHash}, actual {actualHash}.";
     }
 
     private static string ComputeSha256(string path)

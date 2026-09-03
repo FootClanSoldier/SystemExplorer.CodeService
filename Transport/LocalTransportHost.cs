@@ -1944,7 +1944,9 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                 item.InsertText,
                 item.FilterText,
                 item.SortText,
-                item.Preselect))
+                item.Preselect,
+                CompletionSemanticOriginWire.ToWireValue(item.SemanticOrigin),
+                item.InheritanceDepth))
             .ToArray();
 
         return new DocumentCompletionResponse(

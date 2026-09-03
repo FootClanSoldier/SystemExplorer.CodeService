@@ -9,7 +9,7 @@ The only supported upstream base is:
 - instrumentation schema/version: `1`
 - target filename: `ProbeTarget.cs`
 
-`Prepare-RoslynStateTrace.ps1` requires a **throwaway clean checkout** at exactly that commit. It verifies `git rev-parse HEAD` and an empty `git status --porcelain`, preflights every exact source anchor before writing anything, runs the pinned repository-native restore path (`Restore.cmd` on Windows, `./build.sh --restore` on Unix) while the checkout is still clean, re-verifies commit/worktree state, copies `SystemExplorerRoslynStateTrace.cs` into the Workspaces source tree, applies only observational trace calls, then performs a targeted `Release --no-restore` build of the repository's existing `Microsoft.CodeAnalysis.LanguageServer.csproj`. It does not create a commit and does not change Roslyn package versions or target frameworks.
+`Prepare-RoslynStateTrace.ps1` requires a **throwaway clean checkout** at exactly that commit and the external canonical SystemExplorer semantic-reuse patch (SHA-256 `11076630b66576961cfd3e56120b15c9e95b352e08f3f551053a79a647d2f2be`). It verifies `git rev-parse HEAD` and an empty `git status --porcelain`, verifies the patch hash and `git apply --check` while pristine, validates every retained StateTrace source anchor in memory, runs the pinned repository-native restore path (`Restore.cmd` on Windows, `./build.sh --restore` on Unix) while the checkout is still clean, re-verifies commit/worktree state, applies the canonical SystemExplorer patch, confirms that patch did not alter the StateTrace anchor files, and only then writes `SystemExplorerRoslynStateTrace.cs` plus observational trace calls. It finally performs a targeted `Release --no-restore` build of the repository's existing `Microsoft.CodeAnalysis.LanguageServer.csproj`. The output wrapper/provenance directory must be outside the throwaway checkout. The script does not create a commit and does not change Roslyn package versions or target frameworks.
 
 The generated output directory contains a small wrapper plus `provenance.json`. These are runtime artifacts and are deliberately excluded from the SystemExplorer release archive.
 
@@ -24,12 +24,24 @@ Trace lines are written only to stderr and start with `SETRACE|`. The helper cap
 
 The helper is intentionally observational: it uses already-present `Solution`, `ProjectState`, `SourceText`, `TryGetText`, pending tracker state and non-creating `TryGetCompilation`. It does not add semantic-materializing calls such as `GetCompilationAsync`, `GetSemanticModelAsync`, `GetSyntaxTreeAsync`, `WithFrozenPartialSemantics`, diagnostics, completion, workspace mutation, retries, sleeps, or delays.
 
+Windows normal entrypoint is `Prepare-RoslynStateTrace.cmd`; `Prepare-RoslynStateTrace.ps1` is the implementation script. The `.cmd` child uses `-NoLogo -NoProfile -ExecutionPolicy Bypass` process-locally only and does not modify persistent execution policy.
+
 Example preparation:
 
-```powershell
-.\Prepare-RoslynStateTrace.ps1 `
-  -RoslynRoot C:\Temp\roslyn-state-trace-throwaway `
-  -OutputRoot C:\Temp\roslyn-state-trace-output
+```bat
+Prepare-RoslynStateTrace.cmd ^
+  -RoslynRoot "C:\Temp\roslyn-state-trace-throwaway" ^
+  -CanonicalSystemExplorerPatchPath "C:\Path To\Service.ThirdParty\ThirdParty\RoslynLanguageServer\patches\0001-Fix-semantic-model-reuse-after-cross-document-semant.patch" ^
+  -OutputRoot "C:\Temp\roslyn-state-trace-output"
 ```
 
-Then pass both generated absolute paths to probe 1.3.4 using `--state-trace-server` and `--state-trace-provenance`. Never point the trace scenario at a real Godot workspace; the scenario itself only runs against the controlled fixture.
+Then pass both generated absolute paths to probe 1.3.5 using `--state-trace-server` and `--state-trace-provenance`. Never point the trace scenario at a real Godot workspace; the scenario itself only runs against the controlled fixture.
+
+
+`completion.pre_freeze` once again records deterministic authority from the **exact Solution used by
+completion before `GetDocumentWithFrozenPartialSemantics(...)`**. Each event carries the exact solution
+checksum plus target document file path, SHA-256 text hash, and text length from that same snapshot.
+Process-local solution/tracker/compilation identities remain supplementary lineage diagnostics; they are
+not substitutes for deterministic pre-freeze authority. The probe emits
+`StateTracePreFreezeDeterministicEvidencePresent` to check these fields without changing the retained
+stale-behavior request ordering or ordinary suitability classification.

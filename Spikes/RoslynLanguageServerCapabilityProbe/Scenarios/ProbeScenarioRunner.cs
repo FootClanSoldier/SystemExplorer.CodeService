@@ -196,6 +196,8 @@ internal sealed class ProbeScenarioRunner
             // fixture process survival/stderr metrics or classifier authority.
             scenarios.Add(await RoslynStateLineageTraceScenario.RunAsync(
                 context, cancellationToken).ConfigureAwait(false));
+            scenarios.Add(await CompletionSemanticOriginScenario.RunAsync(
+                context, cancellationToken).ConfigureAwait(false));
 
             (ProbeScenarioResult realResult, ProbeWorkspaceReport workspace) = await RealWorkspaceScenario.RunAsync(
                 context, cancellationToken).ConfigureAwait(false);

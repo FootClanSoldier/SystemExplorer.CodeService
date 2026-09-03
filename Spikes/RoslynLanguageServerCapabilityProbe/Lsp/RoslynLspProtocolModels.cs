@@ -103,7 +103,23 @@ internal sealed record ConfigurationItem(
 internal sealed record ConfigurationParams(
     [property: JsonPropertyName("items")] IReadOnlyList<ConfigurationItem> Items);
 
-internal sealed record CompletionItemSummary(string Label, int? Kind, string? Detail);
+internal enum CompletionSemanticOriginKind
+{
+    Unknown,
+    Local,
+    CurrentType,
+    BaseType,
+    OtherUserCode,
+    FrameworkOrOther,
+}
+
+internal sealed record CompletionItemSummary(
+    string Label,
+    int? Kind,
+    string? Detail,
+    CompletionSemanticOriginKind? SemanticOrigin = null,
+    int? InheritanceDepth = null,
+    bool SemanticOriginMetadataMalformed = false);
 
 internal enum CompletionResponseResultKind
 {

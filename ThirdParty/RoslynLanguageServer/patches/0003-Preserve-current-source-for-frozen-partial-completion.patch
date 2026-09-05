@@ -1,0 +1,444 @@
+diff --git a/src/Workspaces/Core/Portable/Workspace/Solution/Document.cs b/src/Workspaces/Core/Portable/Workspace/Solution/Document.cs
+--- a/src/Workspaces/Core/Portable/Workspace/Solution/Document.cs
++++ b/src/Workspaces/Core/Portable/Workspace/Solution/Document.cs
+@@ -548,6 +548,33 @@ public class Document : TextDocument
+         }
+     }
+ 
++    /// <summary>
++    /// Creates a completion-specific frozen-partial document that preserves the current tracked ordinary source
++    /// state for the requesting project's same-language compilation dependency closure.  Unlike the legacy frozen
++    /// partial API, this path deliberately restores more than the requesting document so completion does not bind a
++    /// current document against stale or absent ordinary source from the same compilation graph.
++    /// </summary>
++    internal Document WithFrozenPartialSemanticsForCompletion(CancellationToken cancellationToken)
++    {
++        // Source-generated documents retain the legacy behavior.  Completion's current-source contract applies to
++        // tracked ordinary source only and must not force generators to run.
++        if (this is SourceGeneratedDocument)
++            return this;
++
++        // Preserve the existing fast path when this exact project snapshot already has a complete compilation.
++        if (this.Project.TryGetCompilation(out _))
++            return this;
++
++        var solution = this.Project.Solution;
++        if (solution.PartialSemanticsEnabled && this.Project.SupportsCompilation)
++        {
++            var newSolution = solution.WithFrozenPartialCompilationIncludingSpecificDocumentForCompletion(this.Id, cancellationToken);
++            return newSolution.GetRequiredDocument(this.Id);
++        }
++
++        return this;
++    }
++
+     private string GetDebuggerDisplay()
+         => this.Name;
+ 
+diff --git a/src/Workspaces/Core/Portable/Workspace/Solution/Solution.cs b/src/Workspaces/Core/Portable/Workspace/Solution/Solution.cs
+--- a/src/Workspaces/Core/Portable/Workspace/Solution/Solution.cs
++++ b/src/Workspaces/Core/Portable/Workspace/Solution/Solution.cs
+@@ -1587,6 +1587,26 @@ public partial class Solution
+         }
+     }
+ 
++    /// <summary>
++    /// Creates a completion-specific frozen-partial solution from the current compilation state.  The ordinary
++    /// frozen-solution/document caches remain legacy caches; the completion-specific result is never cached into
++    /// either of them because it has a stronger current-source contract.
++    /// </summary>
++    internal Solution WithFrozenPartialCompilationIncludingSpecificDocumentForCompletion(
++        DocumentId documentId, CancellationToken cancellationToken)
++    {
++        var newCompilationState = CompilationState.WithFrozenPartialCompilationIncludingSpecificDocumentForCompletion(
++            documentId, cancellationToken);
++
++        if (newCompilationState == CompilationState)
++            return this;
++
++        // Deliberately do not pass either legacy frozen cache to this Solution.  The underlying compilation-state
++        // freeze may reuse its immutable compiler-state capture, but current ordinary source is reapplied before the
++        // completion-specific state is returned.
++        return new Solution(newCompilationState);
++    }
++
+     internal async Task<Solution> WithMergedLinkedFileChangesAsync(
+         Solution oldSolution,
+         SolutionChanges? solutionChanges = null,
+diff --git a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.cs b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.cs
+--- a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.cs
++++ b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.cs
+@@ -1747,6 +1747,116 @@ internal sealed partial class SolutionCompilationState
+             return currentState;
+         }
+     }
++
++    /// <summary>
++    /// Creates a frozen-partial state for completion that preserves current tracked ordinary source for the
++    /// requesting project and its same-language transitive compilation dependencies.  This intentionally leaves the
++    /// legacy frozen-partial contract unchanged for all other callers.
++    /// </summary>
++    public SolutionCompilationState WithFrozenPartialCompilationIncludingSpecificDocumentForCompletion(
++        DocumentId documentId, CancellationToken cancellationToken)
++    {
++        // Preserve the existing test hook semantics used to suppress partial solutions.
++        if (this.Services.GetService<IWorkspacePartialSolutionsTestHook>()?.IsPartialSolutionDisabled == true)
++            return this;
++
++        var currentCompilationState = this;
++        var currentDocumentState = currentCompilationState.SolutionState.GetRequiredDocumentState(documentId);
++
++        // Keep the existing linked-document behavior for the requesting document.  As with the legacy path, all
++        // linked siblings use the requesting document's current contents even across language boundaries.
++        const bool includeDifferentLanguages = true;
++        var relatedDocumentIds = currentCompilationState.SolutionState.GetRelatedDocumentIds(documentId, includeDifferentLanguages);
++        var relatedDocumentIdsWithCurrentState = relatedDocumentIds.SelectAsArray(
++            static (relatedDocumentId, currentDocumentState) => (relatedDocumentId, currentDocumentState),
++            currentDocumentState);
++        currentCompilationState = currentCompilationState.WithDocumentContentsFrom(
++            relatedDocumentIdsWithCurrentState, forceEvenIfTreesWouldDiffer: true);
++
++        var requestingProjectState = currentCompilationState.SolutionState.GetRequiredProjectState(documentId.ProjectId);
++        var dependencyGraph = currentCompilationState.SolutionState.GetProjectDependencyGraph();
++        var transitiveDependencies = dependencyGraph.GetProjectsThatThisProjectTransitivelyDependsOn(documentId.ProjectId);
++
++        // Capture current ordinary source before freezing.  Topological order keeps same-language dependencies ahead
++        // of the requesting project when the captured states are later translated back into the frozen graph.
++        using var _1 = ArrayBuilder<DocumentState>.GetInstance(out var currentDocumentStates);
++        using var _2 = PooledHashSet<DocumentId>.GetInstance(out var includedDocumentIds);
++
++        foreach (var projectId in dependencyGraph.GetTopologicallySortedProjects(cancellationToken))
++        {
++            cancellationToken.ThrowIfCancellationRequested();
++
++            if (projectId != documentId.ProjectId && !transitiveDependencies.Contains(projectId))
++                continue;
++
++            var projectState = currentCompilationState.SolutionState.GetRequiredProjectState(projectId);
++
++            // Same-language project references can use compilation references without forcing skeleton creation.
++            // Cross-language projects retain the legacy frozen behavior rather than forcing skeleton work here.
++            if (!projectState.SupportsCompilation || projectState.LanguageServices != requestingProjectState.LanguageServices)
++                continue;
++
++            foreach (var state in projectState.DocumentStates.GetStatesInCompilationOrder())
++            {
++                if (includedDocumentIds.Add(state.Id))
++                    currentDocumentStates.Add(state);
++            }
++        }
++
++        // Linked siblings outside the same-language compilation closure are still part of the requesting-document
++        // frozen contract and must be restored exactly as the legacy path restores them.
++        foreach (var relatedDocumentId in relatedDocumentIds)
++        {
++            cancellationToken.ThrowIfCancellationRequested();
++
++            if (includedDocumentIds.Add(relatedDocumentId))
++                currentDocumentStates.Add(currentCompilationState.SolutionState.GetRequiredDocumentState(relatedDocumentId));
++        }
++
++        cancellationToken.ThrowIfCancellationRequested();
++
++        // Reuse the existing freeze machinery only as the compiler-state base.  The state returned from this method
++        // is never the cached legacy frozen snapshot directly: all captured current ordinary source is reapplied below.
++        var frozenCompilationState = currentCompilationState.WithFrozenPartialCompilations(cancellationToken);
++        var completionCompilationState = frozenCompilationState;
++
++        using var _3 = PooledDictionary<ProjectId, ArrayBuilder<DocumentState>>.GetInstance(out var changedDocumentStates);
++        using var _4 = PooledDictionary<ProjectId, ArrayBuilder<DocumentState>>.GetInstance(out var missingDocumentStates);
++
++        foreach (var newDocumentState in currentDocumentStates)
++        {
++            cancellationToken.ThrowIfCancellationRequested();
++
++            var projectState = completionCompilationState.SolutionState.GetRequiredProjectState(newDocumentState.Id.ProjectId);
++            var frozenDocumentState = projectState.DocumentStates.GetState(newDocumentState.Id);
++
++            if (frozenDocumentState is null)
++            {
++                missingDocumentStates.MultiAdd(newDocumentState.Id.ProjectId, newDocumentState);
++            }
++            else if (!ReferenceEquals(frozenDocumentState, newDocumentState))
++            {
++                changedDocumentStates.MultiAdd(newDocumentState.Id.ProjectId, newDocumentState);
++            }
++        }
++
++        // Existing trees may have been frozen against an older ProjectState (for example the first pending
++        // TouchDocumentsAction.OldProjectState).  Translate those trees forward to the exact captured current state.
++        completionCompilationState = completionCompilationState.WithDocumentStatesOfMultipleProjects(
++            changedDocumentStates.SelectAsArray(
++                static kvp => (kvp.Key, kvp.Value.ToImmutableAndFree())),
++            GetUpdateDocumentsTranslationAction);
++
++        // In the cold/no-compilation path the legacy freeze retains only syntax trees that were already materialized.
++        // Add the rest of the current ordinary source so the requesting compilation and same-language references can
++        // bind against the complete tracked source closure without forcing generators or skeleton references.
++        completionCompilationState = completionCompilationState.WithDocumentStatesOfMultipleProjects(
++            missingDocumentStates.SelectAsArray(
++                static kvp => (kvp.Key, kvp.Value.ToImmutableAndFree())),
++            GetAddDocumentsTranslationAction);
++
++        return completionCompilationState;
++    }
+ 
+     /// <summary>
+     /// Core helper that takes a set of <see cref="DocumentInfo" />s and does the application of the appropriate documents to each project.
+diff --git a/src/Features/Core/Portable/Completion/CompletionService_GetCompletions.cs b/src/Features/Core/Portable/Completion/CompletionService_GetCompletions.cs
+--- a/src/Features/Core/Portable/Completion/CompletionService_GetCompletions.cs
++++ b/src/Features/Core/Portable/Completion/CompletionService_GetCompletions.cs
+@@ -140,7 +140,7 @@ public abstract partial class CompletionService
+         if (_suppressPartialSemantics)
+             return document;
+ 
+-        return document.WithFrozenPartialSemantics(cancellationToken);
++        return document.WithFrozenPartialSemanticsForCompletion(cancellationToken);
+     }
+ 
+     private static bool ValidatePossibleTriggerCharacterSet(CompletionTriggerKind completionTriggerKind, IEnumerable<CompletionProvider> triggeredProviders,
+diff --git a/src/Workspaces/CoreTest/SolutionTests/SolutionTests.cs b/src/Workspaces/CoreTest/SolutionTests/SolutionTests.cs
+--- a/src/Workspaces/CoreTest/SolutionTests/SolutionTests.cs
++++ b/src/Workspaces/CoreTest/SolutionTests/SolutionTests.cs
+@@ -92,6 +92,34 @@ public sealed class SolutionTests : TestBase
+         }
+     }
+ 
++    [Fact]
++    public void WithFrozenPartialSemanticsForCompletionRestoresCurrentProjectDocumentsAfterLegacyFreeze()
++    {
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++
++        var project = SolutionUtilities.AddEmptyProject(workspace.CurrentSolution)
++            .AddDocument("Target.cs", SourceText.From("class Target { public int CurrentMember { get; } }"), filePath: "Target.cs").Project
++            .AddDocument("Consumer.cs", SourceText.From("class Consumer { void M(Target target) { target.ToString(); } }"), filePath: "Consumer.cs").Project;
++
++        var consumerDocument = project.Documents.Single(static document => document.Name == "Consumer.cs");
++
++        // Populate and inspect the legacy frozen snapshot first.  On this cold path it only restores the requesting
++        // document, so Target.cs is absent.  The completion-specific API must not reuse that legacy snapshot as its
++        // final state; it must restore the current ordinary source closure from the current SolutionCompilationState.
++        var legacyDocument = consumerDocument.WithFrozenPartialSemantics(CancellationToken.None);
++        var legacyProjectDocuments = legacyDocument.Project.Documents.Select(static document => document.Name).ToImmutableHashSet();
++
++        Assert.Contains("Consumer.cs", legacyProjectDocuments);
++        Assert.DoesNotContain("Target.cs", legacyProjectDocuments);
++
++        var completionDocument = consumerDocument.WithFrozenPartialSemanticsForCompletion(CancellationToken.None);
++        var completionProjectDocuments = completionDocument.Project.Documents.Select(static document => document.Name).ToImmutableHashSet();
++
++        Assert.Contains("Consumer.cs", completionProjectDocuments);
++        Assert.Contains("Target.cs", completionProjectDocuments);
++        Assert.Equal(2, completionProjectDocuments.Count);
++    }
++
+     [Fact]
+     public void RemoveDocument_Errors()
+     {
+diff --git a/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs b/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
+--- a/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
++++ b/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
+@@ -225,4 +225,203 @@ public sealed class CompletionServiceTests
+         var expectedItem = forkBeforeFreeze ? "C2" : "C1";
+         Assert.True(completionList.ItemsList.Select(item => item.DisplayText).Contains(expectedItem));
+     }
++
++    [Fact]
++    public async Task GettingCompletionListUsesCurrentSourceWithoutPreexistingCompilation()
++    {
++        var consumerMarkup = """
++            class Consumer
++            {
++                void M(Target target)
++                {
++                    target.$$
++                }
++            }
++            """;
++        MarkupTestFile.GetPosition(consumerMarkup.NormalizeLineEndings(), out var consumerSource, out int? position);
++
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++        var project = SolutionUtilities.AddEmptyProject(workspace.CurrentSolution)
++            .AddDocument("Target.cs", "class Target { public int CurrentMember { get; } }", filePath: "Target.cs").Project
++            .AddDocument("Consumer.cs", consumerSource, filePath: "Consumer.cs").Project;
++
++        Assert.True(workspace.SetCurrentSolution(_ => project.Solution, WorkspaceChangeKind.SolutionChanged));
++
++        var document = workspace.CurrentSolution.Projects.Single().Documents.Single(static document => document.Name == "Consumer.cs");
++        Assert.False(document.Project.TryGetCompilation(out _));
++
++        var completionService = document.GetLanguageService<CompletionService>();
++        var completionList = await completionService.GetCompletionsAsync(
++            document, position.Value, CompletionOptions.Default, OptionSet.Empty);
++        var labels = completionList.ItemsList.Select(static item => item.DisplayText).ToImmutableHashSet();
++
++        Assert.Contains("CurrentMember", labels);
++    }
++
++    [Fact]
++    public async Task GettingCompletionListUsesCurrentSourceAfterConsecutiveDocumentChanges()
++    {
++        const string targetV1 = "class Target { public int ProbeDiskMember { get; } }";
++        const string targetV2 = "class Target { public int ProbeUnsavedMember { get; } }";
++        const string targetV3 = "class Target { public int ProbeIncrementalMember { get; } }";
++        var consumerMarkup = """
++            class Consumer
++            {
++                void M(Target target)
++                {
++                    target.$$
++                }
++            }
++            """;
++        MarkupTestFile.GetPosition(consumerMarkup.NormalizeLineEndings(), out var consumerSource, out int? position);
++
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++        var project = SolutionUtilities.AddEmptyProject(workspace.CurrentSolution)
++            .AddDocument("Target.cs", targetV1, filePath: "Target.cs").Project
++            .AddDocument("Consumer.cs", consumerSource, filePath: "Consumer.cs").Project;
++
++        Assert.True(workspace.SetCurrentSolution(_ => project.Solution, WorkspaceChangeKind.SolutionChanged));
++
++        var initialProject = workspace.CurrentSolution.Projects.Single();
++        var initialCompilation = await initialProject.GetCompilationAsync();
++        Assert.NotNull(initialCompilation);
++
++        var targetDocumentId = initialProject.Documents.Single(static document => document.Name == "Target.cs").Id;
++        var consumerDocumentId = initialProject.Documents.Single(static document => document.Name == "Consumer.cs").Id;
++
++        var solutionV2 = workspace.CurrentSolution.WithDocumentText(
++            targetDocumentId, SourceText.From(targetV2), PreservationMode.PreserveIdentity);
++        Assert.True(workspace.SetCurrentSolution(_ => solutionV2, WorkspaceChangeKind.SolutionChanged));
++
++        var consumerV2 = workspace.CurrentSolution.GetRequiredDocument(consumerDocumentId);
++
++        // Populate the legacy frozen snapshot after v2.  Completion must not accidentally reuse the legacy snapshot
++        // as its final state; it must reapply current Target v2.
++        _ = consumerV2.WithFrozenPartialSemantics(CancellationToken.None);
++
++        var labelsV2 = await GetCompletionLabelsAsync(consumerV2);
++        Assert.Contains("ProbeUnsavedMember", labelsV2);
++        Assert.DoesNotContain("ProbeDiskMember", labelsV2);
++
++        // Fork again before any full-semantic/diagnostic operation.  TouchDocumentsAction may merge the pending
++        // v1->v2 and v2->v3 changes while retaining v1 as OldProjectState; completion must still restore v3.
++        var solutionV3 = workspace.CurrentSolution.WithDocumentText(
++            targetDocumentId, SourceText.From(targetV3), PreservationMode.PreserveIdentity);
++        Assert.True(workspace.SetCurrentSolution(_ => solutionV3, WorkspaceChangeKind.SolutionChanged));
++
++        var consumerV3 = workspace.CurrentSolution.GetRequiredDocument(consumerDocumentId);
++        var labelsV3 = await GetCompletionLabelsAsync(consumerV3);
++        Assert.Contains("ProbeIncrementalMember", labelsV3);
++        Assert.DoesNotContain("ProbeUnsavedMember", labelsV3);
++        Assert.DoesNotContain("ProbeDiskMember", labelsV3);
++
++        async Task<ImmutableHashSet<string>> GetCompletionLabelsAsync(Document document)
++        {
++            var completionService = document.GetLanguageService<CompletionService>();
++            var completionList = await completionService.GetCompletionsAsync(
++                document, position.Value, CompletionOptions.Default, OptionSet.Empty);
++            return completionList.ItemsList.Select(static item => item.DisplayText).ToImmutableHashSet();
++        }
++    }
++
++    [Fact]
++    public async Task GettingCompletionListUsesCurrentSourceFromSameLanguageProjectReference()
++    {
++        const string targetV1 = "public class Target { public int ProbeDiskMember { get; } }";
++        const string targetV2 = "public class Target { public int ProbeUnsavedMember { get; } }";
++        var consumerMarkup = """
++            class Consumer
++            {
++                void M(Target target)
++                {
++                    target.$$
++                }
++            }
++            """;
++        MarkupTestFile.GetPosition(consumerMarkup.NormalizeLineEndings(), out var consumerSource, out int? position);
++
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++        var targetProjectId = ProjectId.CreateNewId();
++        var consumerProjectId = ProjectId.CreateNewId();
++        var targetDocumentId = DocumentId.CreateNewId(targetProjectId);
++        var consumerDocumentId = DocumentId.CreateNewId(consumerProjectId);
++
++        var solution = workspace.CurrentSolution
++            .AddProject(targetProjectId, "TargetProject", "TargetProject", LanguageNames.CSharp)
++            .AddDocument(targetDocumentId, "Target.cs", SourceText.From(targetV1), filePath: "Target.cs")
++            .AddProject(consumerProjectId, "ConsumerProject", "ConsumerProject", LanguageNames.CSharp)
++            .AddProjectReference(consumerProjectId, new ProjectReference(targetProjectId))
++            .AddDocument(consumerDocumentId, "Consumer.cs", SourceText.From(consumerSource), filePath: "Consumer.cs");
++
++        Assert.True(workspace.SetCurrentSolution(_ => solution, WorkspaceChangeKind.SolutionChanged));
++
++        var initialConsumerProject = workspace.CurrentSolution.GetRequiredProject(consumerProjectId);
++        var initialCompilation = await initialConsumerProject.GetCompilationAsync();
++        Assert.NotNull(initialCompilation);
++
++        var changedSolution = workspace.CurrentSolution.WithDocumentText(
++            targetDocumentId, SourceText.From(targetV2), PreservationMode.PreserveIdentity);
++        Assert.True(workspace.SetCurrentSolution(_ => changedSolution, WorkspaceChangeKind.SolutionChanged));
++
++        var consumerDocument = workspace.CurrentSolution.GetRequiredDocument(consumerDocumentId);
++        var completionService = consumerDocument.GetLanguageService<CompletionService>();
++        var completionList = await completionService.GetCompletionsAsync(
++            consumerDocument, position.Value, CompletionOptions.Default, OptionSet.Empty);
++        var labels = completionList.ItemsList.Select(static item => item.DisplayText).ToImmutableHashSet();
++
++        Assert.Contains("ProbeUnsavedMember", labels);
++        Assert.DoesNotContain("ProbeDiskMember", labels);
++    }
++
++    [Fact]
++    public async Task GettingCompletionListUsesCurrentSourceEditWithoutRunningSourceGenerator()
++    {
++        const string targetV1 = "class Target { public int ProbeDiskMember { get; } }";
++        const string targetV2 = "class Target { public int ProbeUnsavedMember { get; } }";
++        var consumerMarkup = """
++            class Consumer
++            {
++                void M(Target target)
++                {
++                    target.$$
++                }
++            }
++            """;
++        MarkupTestFile.GetPosition(consumerMarkup.NormalizeLineEndings(), out var consumerSource, out int? position);
++
++        var generatorRanCount = 0;
++        var generator = new CallbackGenerator(onInit: _ => { }, onExecute: _ => Interlocked.Increment(ref generatorRanCount));
++
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++        var analyzerReference = new TestGeneratorReference(generator);
++        var project = SolutionUtilities.AddEmptyProject(workspace.CurrentSolution)
++            .AddAnalyzerReference(analyzerReference)
++            .AddDocument("Target.cs", targetV1, filePath: "Target.cs").Project
++            .AddDocument("Consumer.cs", consumerSource, filePath: "Consumer.cs").Project;
++
++        Assert.True(workspace.SetCurrentSolution(_ => project.Solution, WorkspaceChangeKind.SolutionChanged));
++
++        var currentProject = workspace.CurrentSolution.Projects.Single();
++        var targetDocumentId = currentProject.Documents.Single(static document => document.Name == "Target.cs").Id;
++        var consumerDocumentId = currentProject.Documents.Single(static document => document.Name == "Consumer.cs").Id;
++
++        // Change ordinary source before any compilation or semantic operation has materialized the Target tree.
++        // Completion must bind against this exact current source without forcing the source generator to run.
++        var changedSolution = workspace.CurrentSolution.WithDocumentText(
++            targetDocumentId, SourceText.From(targetV2), PreservationMode.PreserveIdentity);
++        Assert.True(workspace.SetCurrentSolution(_ => changedSolution, WorkspaceChangeKind.SolutionChanged));
++
++        var consumerDocument = workspace.CurrentSolution.GetRequiredDocument(consumerDocumentId);
++        Assert.False(consumerDocument.Project.TryGetCompilation(out _));
++        Assert.Equal(0, generatorRanCount);
++
++        var completionService = consumerDocument.GetLanguageService<CompletionService>();
++        var completionList = await completionService.GetCompletionsAsync(
++            consumerDocument, position.Value, CompletionOptions.Default, OptionSet.Empty);
++        var labels = completionList.ItemsList.Select(static item => item.DisplayText).ToImmutableHashSet();
++
++        Assert.Equal(0, generatorRanCount);
++        Assert.Contains("ProbeUnsavedMember", labels);
++        Assert.DoesNotContain("ProbeDiskMember", labels);
++    }
+ }

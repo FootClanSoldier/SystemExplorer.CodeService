@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
@@ -40,6 +41,7 @@ internal sealed class LocalTransportHost : IAsyncDisposable
     private readonly DocumentSynchronizationHost _documentSynchronizationHost;
     private readonly DocumentSemanticReadinessHost _documentSemanticReadinessHost;
     private readonly DocumentCompletionHost _documentCompletionHost;
+    private readonly DiagnosticLogging _diagnosticLogging;
     private readonly SemaphoreSlim _ingressGate = new(IngressConcurrencyLimit, IngressConcurrencyLimit);
     private readonly TaskCompletionSource _completionSource =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -59,7 +61,8 @@ internal sealed class LocalTransportHost : IAsyncDisposable
         WorkspaceHost workspaceHost,
         DocumentSynchronizationHost documentSynchronizationHost,
         DocumentSemanticReadinessHost documentSemanticReadinessHost,
-        DocumentCompletionHost documentCompletionHost)
+        DocumentCompletionHost documentCompletionHost,
+        DiagnosticLogging diagnosticLogging)
     {
         _protocolContext = protocolContext ?? throw new ArgumentNullException(nameof(protocolContext));
         _workspaceHost = workspaceHost ?? throw new ArgumentNullException(nameof(workspaceHost));
@@ -69,6 +72,8 @@ internal sealed class LocalTransportHost : IAsyncDisposable
             ?? throw new ArgumentNullException(nameof(documentSemanticReadinessHost));
         _documentCompletionHost = documentCompletionHost
             ?? throw new ArgumentNullException(nameof(documentCompletionHost));
+        _diagnosticLogging = diagnosticLogging
+            ?? throw new ArgumentNullException(nameof(diagnosticLogging));
     }
 
     public LocalTransportEndpoint? BoundEndpoint { get; private set; }
@@ -256,6 +261,7 @@ internal sealed class LocalTransportHost : IAsyncDisposable
     private async Task HandleRequestAsync(HttpContext context)
     {
         bool admitted = false;
+        CompletionTransportTimingLogDetails? deferredCompletionTiming = null;
 
         try
         {
@@ -345,13 +351,14 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                     CodeServiceProtocol.CompletionPath,
                     StringComparison.Ordinal))
             {
-                await HandleCompletionAsync(context).ConfigureAwait(false);
-                return;
+                deferredCompletionTiming = await HandleCompletionAsync(context).ConfigureAwait(false);
             }
-
-            await CompleteZeroBodyResponseAsync(
-                context,
-                StatusCodes.Status503ServiceUnavailable).ConfigureAwait(false);
+            else
+            {
+                await CompleteZeroBodyResponseAsync(
+                    context,
+                    StatusCodes.Status503ServiceUnavailable).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
         {
@@ -374,6 +381,11 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                     // Forced transport teardown can retire the gate after the request is aborted.
                 }
             }
+        }
+
+        if (deferredCompletionTiming is not null)
+        {
+            _diagnosticLogging.WriteEvent("completion_transport_timing", deferredCompletionTiming);
         }
     }
 
@@ -809,65 +821,73 @@ internal sealed class LocalTransportHost : IAsyncDisposable
             return;
         }
 
+        DocumentSnapshotOperationResult? completedSnapshotResult = null;
         try
         {
+            DocumentSnapshotOperationResult result;
             if (!_workspaceHost.TryGetCurrentPublication(out WorkspacePublication publication))
             {
-                await CompleteDocumentSnapshotResponseAsync(
-                    context,
-                    headerValidation.RequestId,
-                    DocumentSnapshotOperationResult.Failure(
-                        DocumentSynchronizationOutcome.WorkspaceUnavailable,
-                        request)).ConfigureAwait(false);
-                return;
-            }
-
-            using CancellationTokenSource linkedCancellation =
-                CancellationTokenSource.CreateLinkedTokenSource(
-                    context.RequestAborted,
-                    lease.ServiceWorkShutdownToken);
-
-            DocumentSnapshotOperationResult result;
-            try
-            {
-                result = await _documentSynchronizationHost.SynchronizeSnapshotAsync(
-                    request,
-                    publication,
-                    lease,
-                    linkedCancellation.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-                when (lease.ServiceWorkShutdownToken.IsCancellationRequested
-                    && !context.RequestAborted.IsCancellationRequested)
-            {
                 result = DocumentSnapshotOperationResult.Failure(
-                    DocumentSynchronizationOutcome.Unavailable,
-                    request,
-                    publication);
+                    DocumentSynchronizationOutcome.WorkspaceUnavailable,
+                    request);
+            }
+            else
+            {
+                using CancellationTokenSource linkedCancellation =
+                    CancellationTokenSource.CreateLinkedTokenSource(
+                        context.RequestAborted,
+                        lease.ServiceWorkShutdownToken);
+
+                try
+                {
+                    result = await _documentSynchronizationHost.SynchronizeSnapshotAsync(
+                        request,
+                        publication,
+                        lease,
+                        linkedCancellation.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                    when (lease.ServiceWorkShutdownToken.IsCancellationRequested
+                        && !context.RequestAborted.IsCancellationRequested)
+                {
+                    result = DocumentSnapshotOperationResult.Failure(
+                        DocumentSynchronizationOutcome.Unavailable,
+                        request,
+                        publication);
+                }
             }
 
             await CompleteDocumentSnapshotResponseAsync(
                 context,
                 headerValidation.RequestId,
                 result).ConfigureAwait(false);
+            completedSnapshotResult = result;
         }
         finally
         {
             lease.Retire();
         }
+
+        if (completedSnapshotResult is DocumentSnapshotOperationResult snapshotResult)
+        {
+            _documentSemanticReadinessHost.ObserveFirstDocumentForSemanticWarmup(snapshotResult);
+        }
     }
 
-    private async Task HandleCompletionAsync(HttpContext context)
+    private async Task<CompletionTransportTimingLogDetails?> HandleCompletionAsync(HttpContext context)
     {
+        bool diagnosticsEnabled = _diagnosticLogging.IsEnabled;
+        long handlerStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
+
         if (!HttpMethods.IsPost(context.Request.Method))
         {
             await CompleteZeroBodyResponseAsync(context, StatusCodes.Status405MethodNotAllowed).ConfigureAwait(false);
-            return;
+            return null;
         }
         if (!TryAuthenticate(context.Request))
         {
             await CompleteZeroBodyResponseAsync(context, StatusCodes.Status401Unauthorized).ConfigureAwait(false);
-            return;
+            return null;
         }
 
         WorkspaceRequestHeaderValidationResult headerValidation = ValidateWorkspaceRequestHeaders(context.Request);
@@ -880,14 +900,23 @@ internal sealed class LocalTransportHost : IAsyncDisposable
             await CompleteBoundedCompletionResponseAsync(
                 context,
                 headerValidation.RequestId,
-                DocumentCompletionResult.Failure(outcome)).ConfigureAwait(false);
-            return;
+                DocumentCompletionResult.Failure(outcome),
+                captureTimings: false).ConfigureAwait(false);
+            return null;
         }
 
         TrySetEndpointRequestBodyLimit(context, DocumentCompletionLimits.MaxRequestBodySizeBytes);
+        double? preBodyValidationDurationMs = diagnosticsEnabled
+            ? Stopwatch.GetElapsedTime(handlerStarted, Stopwatch.GetTimestamp()).TotalMilliseconds
+            : null;
+
+        long bodyReadParseStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
         CompletionBodyParseResult bodyResult = await TryReadCompletionBodyAsync(
             context.Request,
             context.RequestAborted).ConfigureAwait(false);
+        double? bodyReadParseDurationMs = diagnosticsEnabled
+            ? Stopwatch.GetElapsedTime(bodyReadParseStarted, Stopwatch.GetTimestamp()).TotalMilliseconds
+            : null;
         if (!bodyResult.IsSuccess || bodyResult.Request is not DocumentCompletionRequest request)
         {
             DocumentCompletionOutcome outcome = bodyResult.FailureKind == DocumentRequestBodyFailureKind.VersionMismatch
@@ -897,11 +926,16 @@ internal sealed class LocalTransportHost : IAsyncDisposable
             await CompleteBoundedCompletionResponseAsync(
                 context,
                 headerValidation.RequestId,
-                DocumentCompletionResult.Failure(outcome, bodyResult.Request)).ConfigureAwait(false);
-            return;
+                DocumentCompletionResult.Failure(outcome, bodyResult.Request),
+                captureTimings: false).ConfigureAwait(false);
+            return null;
         }
 
+        long workloadAdmissionStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
         WorkloadAdmissionResult admission = _documentCompletionHost.TryAdmitTransportOperation();
+        double? workloadAdmissionDurationMs = diagnosticsEnabled
+            ? Stopwatch.GetElapsedTime(workloadAdmissionStarted, Stopwatch.GetTimestamp()).TotalMilliseconds
+            : null;
         if (admission.Status != WorkloadAdmissionStatus.Admitted || admission.Lease is not WorkloadExecutionLease lease)
         {
             DocumentCompletionOutcome outcome = admission.Status == WorkloadAdmissionStatus.Busy
@@ -911,9 +945,16 @@ internal sealed class LocalTransportHost : IAsyncDisposable
             await CompleteBoundedCompletionResponseAsync(
                 context,
                 headerValidation.RequestId,
-                DocumentCompletionResult.Failure(outcome, request)).ConfigureAwait(false);
-            return;
+                DocumentCompletionResult.Failure(outcome, request),
+                captureTimings: false).ConfigureAwait(false);
+            return null;
         }
+
+        DocumentCompletionResult? completedResult = null;
+        CompletionTransportResponseTiming responseTiming = default;
+        double? completionHostObservedDurationMs = null;
+        double? handlerUntilResponseCompleteDurationMs = null;
+        bool responseCompleted = false;
 
         try
         {
@@ -921,6 +962,7 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                 context.RequestAborted,
                 lease.ServiceWorkShutdownToken);
             DocumentCompletionResult result;
+            long completionHostStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
             try
             {
                 result = await _documentCompletionHost.CompleteAsync(
@@ -933,15 +975,54 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                 result = DocumentCompletionResult.Failure(DocumentCompletionOutcome.Unavailable, request);
             }
 
-            await CompleteBoundedCompletionResponseAsync(
+            if (diagnosticsEnabled)
+            {
+                completionHostObservedDurationMs = Stopwatch.GetElapsedTime(
+                    completionHostStarted,
+                    Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
+
+            completedResult = result;
+            responseTiming = await CompleteBoundedCompletionResponseAsync(
                 context,
                 headerValidation.RequestId,
-                result).ConfigureAwait(false);
+                result,
+                diagnosticsEnabled).ConfigureAwait(false);
+            responseCompleted = true;
+            if (diagnosticsEnabled)
+            {
+                handlerUntilResponseCompleteDurationMs = Stopwatch.GetElapsedTime(
+                    handlerStarted,
+                    Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
         }
         finally
         {
             lease.Retire();
         }
+
+        if (diagnosticsEnabled && responseCompleted && completedResult is not null)
+        {
+            return new CompletionTransportTimingLogDetails(
+                headerValidation.RequestId,
+                lease.OperationId,
+                request.ClientGeneration,
+                request.ClientVersion,
+                request.Line,
+                request.Character,
+                responseTiming.FinalOutcome,
+                preBodyValidationDurationMs,
+                bodyReadParseDurationMs,
+                workloadAdmissionDurationMs,
+                completionHostObservedDurationMs,
+                responseTiming.ResponseProjectionDurationMs,
+                responseTiming.ResponseSerializationDurationMs,
+                responseTiming.ResponseWriteDurationMs,
+                responseTiming.ResponseBytes,
+                handlerUntilResponseCompleteDurationMs);
+        }
+
+        return null;
     }
 
     private static async Task<CompletionBodyParseResult> TryReadCompletionBodyAsync(
@@ -1894,17 +1975,38 @@ internal sealed class LocalTransportHost : IAsyncDisposable
             response);
     }
 
-    private static async Task CompleteBoundedCompletionResponseAsync(
+    private static async Task<CompletionTransportResponseTiming> CompleteBoundedCompletionResponseAsync(
         HttpContext context,
         string? requestId,
-        DocumentCompletionResult result)
+        DocumentCompletionResult result,
+        bool captureTimings)
     {
+        double? responseProjectionDurationMs = null;
+        double? responseSerializationDurationMs = null;
+        long phaseStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
         DocumentCompletionResponse response = CreateCompletionResponse(requestId, result);
+        if (captureTimings)
+        {
+            responseProjectionDurationMs = Stopwatch.GetElapsedTime(
+                phaseStarted,
+                Stopwatch.GetTimestamp()).TotalMilliseconds;
+        }
+
+        phaseStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(response);
+        if (captureTimings)
+        {
+            responseSerializationDurationMs = Stopwatch.GetElapsedTime(
+                phaseStarted,
+                Stopwatch.GetTimestamp()).TotalMilliseconds;
+        }
+
         int statusCode = GetCompletionStatusCode(result.Outcome);
+        string finalOutcome = GetCompletionOutcome(result.Outcome);
 
         if (json.Length > DocumentCompletionLimits.MaxResponseBodySizeBytes)
         {
+            phaseStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
             WorkspacePublicationIdentity? publication = result.WorkspacePublicationIdentity;
             response = new DocumentCompletionResponse(
                 CodeServiceProtocol.CompletionSchemaVersion,
@@ -1921,16 +2023,66 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                 result.RoslynOverlayRevision,
                 IsIncomplete: false,
                 Items: []);
+            if (captureTimings)
+            {
+                responseProjectionDurationMs = (responseProjectionDurationMs ?? 0)
+                    + Stopwatch.GetElapsedTime(phaseStarted, Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
+
+            phaseStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
             json = JsonSerializer.SerializeToUtf8Bytes(response);
+            if (captureTimings)
+            {
+                responseSerializationDurationMs = (responseSerializationDurationMs ?? 0)
+                    + Stopwatch.GetElapsedTime(phaseStarted, Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
+
             statusCode = StatusCodes.Status503ServiceUnavailable;
+            finalOutcome = CodeServiceProtocol.CompletionUnavailableOutcome;
         }
 
         context.Response.StatusCode = statusCode;
         context.Response.ContentType = "application/json; charset=utf-8";
         context.Response.ContentLength = json.Length;
+        phaseStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
         await context.Response.Body.WriteAsync(json, context.RequestAborted).ConfigureAwait(false);
         await context.Response.CompleteAsync().ConfigureAwait(false);
+        double? responseWriteDurationMs = captureTimings
+            ? Stopwatch.GetElapsedTime(phaseStarted, Stopwatch.GetTimestamp()).TotalMilliseconds
+            : null;
+
+        return new CompletionTransportResponseTiming(
+            responseProjectionDurationMs,
+            responseSerializationDurationMs,
+            responseWriteDurationMs,
+            json.Length,
+            finalOutcome);
     }
+
+    private readonly record struct CompletionTransportResponseTiming(
+        double? ResponseProjectionDurationMs,
+        double? ResponseSerializationDurationMs,
+        double? ResponseWriteDurationMs,
+        int ResponseBytes,
+        string? FinalOutcome);
+
+    private sealed record CompletionTransportTimingLogDetails(
+        string? RequestId,
+        long WorkloadOperationId,
+        long ClientGeneration,
+        long ClientVersion,
+        int Line,
+        int Character,
+        string? FinalOutcome,
+        double? PreBodyValidationDurationMs,
+        double? BodyReadParseDurationMs,
+        double? WorkloadAdmissionDurationMs,
+        double? CompletionHostObservedDurationMs,
+        double? ResponseProjectionDurationMs,
+        double? ResponseSerializationDurationMs,
+        double? ResponseWriteDurationMs,
+        int ResponseBytes,
+        double? HandlerUntilResponseCompleteDurationMs);
 
     private static DocumentCompletionResponse CreateCompletionResponse(
         string? requestId,

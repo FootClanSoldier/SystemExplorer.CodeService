@@ -16726,6 +16726,14 @@
             further changes.
             </param>
         </member>
+        <member name="M:Microsoft.CodeAnalysis.Document.WithFrozenPartialSemanticsForCompletion(System.Threading.CancellationToken)">
+            <summary>
+            Creates a completion-specific frozen-partial document that preserves the current tracked ordinary source
+            state for the requesting project's same-language compilation dependency closure.  Unlike the legacy frozen
+            partial API, this path deliberately restores more than the requesting document so completion does not bind a
+            current document against stale or absent ordinary source from the same compilation graph.
+            </summary>
+        </member>
         <member name="M:Microsoft.CodeAnalysis.Document.GetOptionsAsync(System.Threading.CancellationToken)">
             <summary>
             Returns the options that should be applied to this document. This consists of global options from <see cref="P:Microsoft.CodeAnalysis.Solution.Options"/>,
@@ -18057,6 +18065,13 @@
             instance should be used as its own lock when reading or writing to it.
             </summary>
         </member>
+        <member name="F:Microsoft.CodeAnalysis.Solution._documentIdToFrozenSolutionForCompletion">
+            <summary>
+            Completion-specific frozen solutions keyed by document for this immutable Solution snapshot only.  This cache
+            must never be shared with the legacy frozen-document cache because completion has a stronger current-source
+            contract.  A new Solution snapshot naturally starts with an empty completion cache.
+            </summary>
+        </member>
         <member name="P:Microsoft.CodeAnalysis.Solution.Services">
             <summary>
             Per solution services provided by the host environment.  Use this instead of <see
@@ -18685,6 +18700,13 @@
             <para/> A compilation for the project containing the specified document id will be guaranteed to exist with
             at least the syntax tree for the document.
             <para/> This not intended to be the public API, use Document.WithFrozenPartialSemantics() instead.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.Solution.WithFrozenPartialCompilationIncludingSpecificDocumentForCompletion(Microsoft.CodeAnalysis.DocumentId,System.Threading.CancellationToken)">
+            <summary>
+            Creates a completion-specific frozen-partial solution from the current compilation state.  Legacy frozen
+            caches remain untouched; this stronger current-source result is cached only by document on this immutable
+            Solution snapshot.
             </summary>
         </member>
         <member name="M:Microsoft.CodeAnalysis.Solution.GetFirstRelatedDocumentId(Microsoft.CodeAnalysis.DocumentId,Microsoft.CodeAnalysis.ProjectId)">
@@ -19326,6 +19348,13 @@
             <paramref name="sourceGeneratorExecutionVersions"/> will not be touched (and they will stay in the map).
             </summary>
         </member>
+        <member name="M:Microsoft.CodeAnalysis.SolutionCompilationState.WithFrozenPartialCompilationsForCompletion(Microsoft.CodeAnalysis.ProjectId,System.Threading.CancellationToken)">
+            <summary>
+            Creates a completion-specific frozen snapshot.  The requesting project and its same-language transitive
+            compilation dependencies preserve existing in-progress translation chains; all other projects retain the
+            legacy frozen-partial policy.  This snapshot is intentionally not stored in the legacy frozen cache.
+            </summary>
+        </member>
         <member name="M:Microsoft.CodeAnalysis.SolutionCompilationState.WithFrozenPartialCompilationIncludingSpecificDocument(Microsoft.CodeAnalysis.DocumentId,System.Threading.CancellationToken)">
             <summary>
             Creates a branch of the solution that has its compilations frozen in whatever state they are in at the time,
@@ -19335,6 +19364,13 @@
             syntax tree for the document.
             <para/>
             This not intended to be the public API, use Document.WithFrozenPartialSemantics() instead.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.SolutionCompilationState.WithFrozenPartialCompilationIncludingSpecificDocumentForCompletion(Microsoft.CodeAnalysis.DocumentId,System.Threading.CancellationToken)">
+            <summary>
+            Creates a frozen-partial state for completion that preserves current tracked ordinary source for the
+            requesting project and its same-language transitive compilation dependencies.  This intentionally leaves the
+            legacy frozen-partial contract unchanged for all other callers.
             </summary>
         </member>
         <member name="M:Microsoft.CodeAnalysis.SolutionCompilationState.AddDocumentsToMultipleProjects``1(System.Collections.Immutable.ImmutableArray{Microsoft.CodeAnalysis.DocumentInfo})">
@@ -19390,6 +19426,12 @@
         <member name="M:Microsoft.CodeAnalysis.SolutionCompilationState.ICompilationTracker.WithDoNotCreateCreationPolicy">
             <summary>
             Updates the creation policy for this tracker. Setting it to <see cref="F:Microsoft.CodeAnalysis.SolutionCompilationState.CreationPolicy.DoNotCreate"/>.
+            </summary>
+        </member>
+        <member name="M:Microsoft.CodeAnalysis.SolutionCompilationState.ICompilationTracker.WithDoNotCreateCreationPolicyForCompletion">
+            <summary>
+            Updates the creation policy for completion-specific frozen partial semantics while preserving any existing
+            incremental translation lineage.  Cold trackers retain the legacy DoNotCreate behavior.
             </summary>
         </member>
         <member name="M:Microsoft.CodeAnalysis.SolutionCompilationState.ICompilationTracker.GetSourceGeneratedDocumentStatesAsync(Microsoft.CodeAnalysis.SolutionCompilationState,System.Boolean,System.Threading.CancellationToken)">

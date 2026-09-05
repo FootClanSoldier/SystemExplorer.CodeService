@@ -1,0 +1,434 @@
+diff --git a/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs b/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
+--- a/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
++++ b/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
+@@ -7,4 +7,53 @@
+         Assert.Contains("ProbeUnsavedMember", labels);
+         Assert.DoesNotContain("ProbeDiskMember", labels);
+     }
++
++    [Fact]
++    public async Task GettingCompletionListAfterWarmSourceEditDoesNotRerunSourceGenerator()
++    {
++        const string targetV1 = "class Target { public int ProbeDiskMember { get; } }";
++        const string targetV2 = "class Target { public int ProbeUnsavedMember { get; } }";
++        var consumerMarkup = """
++            class Consumer
++            {
++                void M(Target target)
++                {
++                    target.$$
++                }
++            }
++            """;
++        MarkupTestFile.GetPosition(consumerMarkup.NormalizeLineEndings(), out var consumerSource, out int? position);
++
++        var generatorRanCount = 0;
++        var generator = new CallbackGenerator(onInit: _ => { }, onExecute: _ => Interlocked.Increment(ref generatorRanCount));
++
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++        var project = SolutionUtilities.AddEmptyProject(workspace.CurrentSolution)
++            .AddAnalyzerReference(new TestGeneratorReference(generator))
++            .AddDocument("Target.cs", targetV1, filePath: "Target.cs").Project
++            .AddDocument("Consumer.cs", consumerSource, filePath: "Consumer.cs").Project;
++
++        Assert.True(workspace.SetCurrentSolution(_ => project.Solution, WorkspaceChangeKind.SolutionChanged));
++
++        var initialProject = workspace.CurrentSolution.Projects.Single();
++        Assert.NotNull(await initialProject.GetCompilationAsync());
++        var generatorRanCountAfterWarmup = generatorRanCount;
++        Assert.True(generatorRanCountAfterWarmup > 0);
++
++        var targetDocumentId = initialProject.Documents.Single(static document => document.Name == "Target.cs").Id;
++        var consumerDocumentId = initialProject.Documents.Single(static document => document.Name == "Consumer.cs").Id;
++        var changedSolution = workspace.CurrentSolution.WithDocumentText(
++            targetDocumentId, SourceText.From(targetV2), PreservationMode.PreserveIdentity);
++        Assert.True(workspace.SetCurrentSolution(_ => changedSolution, WorkspaceChangeKind.SolutionChanged));
++
++        var consumerDocument = workspace.CurrentSolution.GetRequiredDocument(consumerDocumentId);
++        var completionService = consumerDocument.GetLanguageService<CompletionService>();
++        var completionList = await completionService.GetCompletionsAsync(
++            consumerDocument, position.Value, CompletionOptions.Default, OptionSet.Empty);
++        var labels = completionList.ItemsList.Select(static item => item.DisplayText).ToImmutableHashSet();
++
++        Assert.Equal(generatorRanCountAfterWarmup, generatorRanCount);
++        Assert.Contains("ProbeUnsavedMember", labels);
++        Assert.DoesNotContain("ProbeDiskMember", labels);
++    }
+ }
+diff --git a/src/Workspaces/Core/Portable/Workspace/Solution/Solution.cs b/src/Workspaces/Core/Portable/Workspace/Solution/Solution.cs
+--- a/src/Workspaces/Core/Portable/Workspace/Solution/Solution.cs
++++ b/src/Workspaces/Core/Portable/Workspace/Solution/Solution.cs
+@@ -3,7 +3,14 @@
+     /// instance should be used as its own lock when reading or writing to it.
+     /// </summary>
+     private readonly Dictionary<DocumentId, AsyncLazy<Solution>> _documentIdToFrozenSolution = [];
+ 
++    /// <summary>
++    /// Completion-specific frozen solutions keyed by document for this immutable Solution snapshot only.  This cache
++    /// must never be shared with the legacy frozen-document cache because completion has a stronger current-source
++    /// contract.  A new Solution snapshot naturally starts with an empty completion cache.
++    /// </summary>
++    private readonly Dictionary<DocumentId, AsyncLazy<Solution>> _documentIdToFrozenSolutionForCompletion = [];
++
+     private Solution(
+         SolutionCompilationState compilationState,
+         AsyncLazy<Solution>? cachedFrozenSolution = null)
+@@ -87,23 +94,52 @@
+     }
+ 
+     /// <summary>
+-    /// Creates a completion-specific frozen-partial solution from the current compilation state.  The ordinary
+-    /// frozen-solution/document caches remain legacy caches; the completion-specific result is never cached into
+-    /// either of them because it has a stronger current-source contract.
++    /// Creates a completion-specific frozen-partial solution from the current compilation state.  Legacy frozen
++    /// caches remain untouched; this stronger current-source result is cached only by document on this immutable
++    /// Solution snapshot.
+     /// </summary>
+     internal Solution WithFrozenPartialCompilationIncludingSpecificDocumentForCompletion(
+         DocumentId documentId, CancellationToken cancellationToken)
+     {
+-        var newCompilationState = CompilationState.WithFrozenPartialCompilationIncludingSpecificDocumentForCompletion(
+-            documentId, cancellationToken);
++        return GetLazySolution().GetValue(cancellationToken);
++
++        AsyncLazy<Solution> GetLazySolution()
++        {
++            lock (_documentIdToFrozenSolutionForCompletion)
++            {
++                if (!_documentIdToFrozenSolutionForCompletion.TryGetValue(documentId, out var lazySolution))
++                {
++                    lazySolution = CreateLazyFrozenSolutionForCompletion(this, documentId);
++                    _documentIdToFrozenSolutionForCompletion.Add(documentId, lazySolution);
++                }
++
++                return lazySolution;
++            }
++        }
++
++        static AsyncLazy<Solution> CreateLazyFrozenSolutionForCompletion(Solution solution, DocumentId documentId)
++            => AsyncLazy.Create(synchronousComputeFunction: static (arg, cancellationToken) =>
++                ComputeFrozenSolutionForCompletion(arg.solution, arg.documentId, cancellationToken),
++                arg: (solution, documentId));
++
++        static Solution ComputeFrozenSolutionForCompletion(
++            Solution solution, DocumentId documentId, CancellationToken cancellationToken)
++        {
++            var newCompilationState = solution.CompilationState.WithFrozenPartialCompilationIncludingSpecificDocumentForCompletion(
++                documentId, cancellationToken);
++
++            if (newCompilationState == solution.CompilationState)
++                return solution;
++
++            var frozenSolution = new Solution(newCompilationState);
+ 
+-        if (newCompilationState == CompilationState)
+-            return this;
++            // Make re-freezing this completion-specific snapshot for the same document a no-op as well.  This cache
++            // is still entirely separate from _documentIdToFrozenSolution and is scoped to frozenSolution itself.
++            Contract.ThrowIfTrue(frozenSolution._documentIdToFrozenSolutionForCompletion.Count != 0);
++            frozenSolution._documentIdToFrozenSolutionForCompletion.Add(documentId, AsyncLazy.Create(frozenSolution));
+ 
+-        // Deliberately do not pass either legacy frozen cache to this Solution.  The underlying compilation-state
+-        // freeze may reuse its immutable compiler-state capture, but current ordinary source is reapplied before the
+-        // completion-specific state is returned.
+-        return new Solution(newCompilationState);
++            return frozenSolution;
++        }
+     }
+ 
+     internal async Task<Solution> WithMergedLinkedFileChangesAsync(
+diff --git a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.ICompilationTracker.cs b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.ICompilationTracker.cs
+--- a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.ICompilationTracker.cs
++++ b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.ICompilationTracker.cs
+@@ -3,4 +3,10 @@
+         /// </summary>
+         ICompilationTracker WithDoNotCreateCreationPolicy();
+ 
++        /// <summary>
++        /// Updates the creation policy for completion-specific frozen partial semantics while preserving any existing
++        /// incremental translation lineage.  Cold trackers retain the legacy DoNotCreate behavior.
++        /// </summary>
++        ICompilationTracker WithDoNotCreateCreationPolicyForCompletion();
++
+         Task<VersionStamp> GetDependentVersionAsync(SolutionCompilationState compilationState, CancellationToken cancellationToken);
+diff --git a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.RegularCompilationTracker.cs b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.RegularCompilationTracker.cs
+--- a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.RegularCompilationTracker.cs
++++ b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.RegularCompilationTracker.cs
+@@ -92,5 +92,31 @@
+                 throw ExceptionUtilities.UnexpectedValue(state.GetType());
+             }
+         }
+ 
++        ICompilationTracker ICompilationTracker.WithDoNotCreateCreationPolicyForCompletion()
++            => WithDoNotCreateCreationPolicyForCompletion();
++
++        public RegularCompilationTracker WithDoNotCreateCreationPolicyForCompletion()
++        {
++            var state = this.ReadState();
++
++            // Completion only changes the warm/in-progress behavior.  Final and cold/null states intentionally keep
++            // the exact legacy DoNotCreate semantics, including the cold parsed-tree preservation path.
++            if (state is not InProgressState inProgressState)
++                return WithDoNotCreateCreationPolicy();
++
++            // Keep the current ProjectState and the existing pending translation chain.  When this cloned tracker is
++            // later asked for a compilation, CollapseInProgressStateAsync can apply those already-recorded incremental
++            // translations instead of snapping back to the first OldProjectState and discarding the chain.
++            return new RegularCompilationTracker(
++                this.ProjectState,
++                new InProgressState(
++                    CreationPolicy.DoNotCreate,
++                    inProgressState.LazyCompilationWithoutGeneratedDocuments,
++                    inProgressState.GeneratorInfo,
++                    inProgressState.LazyStaleCompilationWithGeneratedDocuments,
++                    inProgressState.PendingTranslationActions),
++                skeletonReferenceCacheToClone: _skeletonReferenceCache);
++        }
++
+         public async ValueTask<TextDocumentStates<SourceGeneratedDocumentState>> GetSourceGeneratedDocumentStatesAsync(
+diff --git a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.WithFrozenSourceGeneratedDocumentsCompilationTracker.cs b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.WithFrozenSourceGeneratedDocumentsCompilationTracker.cs
+--- a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.WithFrozenSourceGeneratedDocumentsCompilationTracker.cs
++++ b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.WithFrozenSourceGeneratedDocumentsCompilationTracker.cs
+@@ -12,6 +12,14 @@
+                 ? this
+                 : new WithFrozenSourceGeneratedDocumentsCompilationTracker(underlyingTracker, _replacementDocumentStates);
+         }
+ 
++        public ICompilationTracker WithDoNotCreateCreationPolicyForCompletion()
++        {
++            var underlyingTracker = this.UnderlyingTracker.WithDoNotCreateCreationPolicyForCompletion();
++            return underlyingTracker == this.UnderlyingTracker
++                ? this
++                : new WithFrozenSourceGeneratedDocumentsCompilationTracker(underlyingTracker, _replacementDocumentStates);
++        }
++
+         /// <summary>
+         /// Updates the frozen source generated documents states being tracked
+diff --git a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.cs b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.cs
+--- a/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.cs
++++ b/src/Workspaces/Core/Portable/Workspace/Solution/SolutionCompilationState.cs
+@@ -3,7 +3,87 @@
+             }
+         }
+     }
+ 
++    /// <summary>
++    /// Creates a completion-specific frozen snapshot.  The requesting project and its same-language transitive
++    /// compilation dependencies preserve existing in-progress translation chains; all other projects retain the
++    /// legacy frozen-partial policy.  This snapshot is intentionally not stored in the legacy frozen cache.
++    /// </summary>
++    private SolutionCompilationState WithFrozenPartialCompilationsForCompletion(
++        ProjectId requestingProjectId, CancellationToken cancellationToken)
++    {
++        var (sortedNewProjectStates, newIdToTrackerMap) = ComputeFrozenSnapshotMapsForCompletion(
++            requestingProjectId, cancellationToken);
++
++        var dependencyGraph = SolutionState.CreateDependencyGraph(this.SolutionState.ProjectIds, sortedNewProjectStates);
++        var newState = this.SolutionState.Branch(
++            projectStates: sortedNewProjectStates,
++            dependencyGraph: dependencyGraph);
++
++        return this.Branch(newState, newIdToTrackerMap);
++    }
++
++    private (ImmutableArray<ProjectState> sortedProjectStates, ImmutableSegmentedDictionary<ProjectId, ICompilationTracker>)
++        ComputeFrozenSnapshotMapsForCompletion(ProjectId requestingProjectId, CancellationToken cancellationToken)
++    {
++        var requestingProjectState = this.SolutionState.GetRequiredProjectState(requestingProjectId);
++        var dependencyGraph = this.SolutionState.GetProjectDependencyGraph();
++        var transitiveDependencies = dependencyGraph.GetProjectsThatThisProjectTransitivelyDependsOn(requestingProjectId);
++
++        // Keep the same tracker-map stabilization loop as the legacy freeze, but opt only the completion-relevant
++        // same-language project closure into the stronger in-progress preservation policy.
++        while (true)
++        {
++            var originalProjectIdToTrackerMap = _projectIdToTrackerMap;
++            var newIdToTrackerMapBuilder = originalProjectIdToTrackerMap.ToBuilder();
++            var projectStateChanged = false;
++            using var _ = ArrayBuilder<ProjectState>.GetInstance(this.SolutionState.SortedProjectStates.Length, out var newSortedProjectStatesBuilder);
++            newSortedProjectStatesBuilder.AddRange(this.SolutionState.SortedProjectStates);
++
++            var updatedIdToTrackerMapBuilder = originalProjectIdToTrackerMap.ToBuilder();
++            for (var i = 0; i < newSortedProjectStatesBuilder.Count; i++)
++            {
++                var projectId = newSortedProjectStatesBuilder[i].Id;
++                cancellationToken.ThrowIfCancellationRequested();
++
++                var oldProjectState = this.SolutionState.GetRequiredProjectState(projectId);
++                if (!oldProjectState.SupportsCompilation)
++                    continue;
++
++                if (!originalProjectIdToTrackerMap.TryGetValue(projectId, out var oldTracker))
++                {
++                    oldTracker = CreateCompilationTracker(projectId, this.SolutionState);
++                    updatedIdToTrackerMapBuilder[projectId] = oldTracker;
++                }
++
++                var useCompletionPolicy =
++                    (projectId == requestingProjectId || transitiveDependencies.Contains(projectId)) &&
++                    oldProjectState.LanguageServices == requestingProjectState.LanguageServices;
++
++                var newTracker = useCompletionPolicy
++                    ? oldTracker.WithDoNotCreateCreationPolicyForCompletion()
++                    : oldTracker.WithDoNotCreateCreationPolicy();
++
++                if (oldTracker == newTracker)
++                    continue;
++
++                newSortedProjectStatesBuilder[i] = newTracker.ProjectState;
++                newIdToTrackerMapBuilder[projectId] = newTracker;
++                projectStateChanged = true;
++            }
++
++            var updatedIdToTrackerMap = updatedIdToTrackerMapBuilder.ToImmutable();
++            if (originalProjectIdToTrackerMap == RoslynImmutableInterlocked.InterlockedCompareExchange(
++                ref _projectIdToTrackerMap, updatedIdToTrackerMap, originalProjectIdToTrackerMap))
++            {
++                var newProjectStates = projectStateChanged
++                    ? newSortedProjectStatesBuilder.ToImmutableAndClear()
++                    : this.SolutionState.SortedProjectStates;
++                return (newProjectStates, newIdToTrackerMapBuilder.ToImmutable());
++            }
++        }
++    }
++
+     /// <summary>
+     /// Creates a branch of the solution that has its compilations frozen in whatever state they are in at the time,
+     /// assuming a background compiler is busy building this compilations.
+@@ -164,9 +245,11 @@
+ 
+         cancellationToken.ThrowIfCancellationRequested();
+ 
+-        // Reuse the existing freeze machinery only as the compiler-state base.  The state returned from this method
+-        // is never the cached legacy frozen snapshot directly: all captured current ordinary source is reapplied below.
+-        var frozenCompilationState = currentCompilationState.WithFrozenPartialCompilations(cancellationToken);
++        // Freeze through the completion-specific tracker policy.  Warm in-progress trackers in the relevant
++        // same-language closure keep their existing pending source translations; cold/null trackers still use the
++        // legacy frozen behavior.  The current-source reapply below remains the correctness safety net.
++        var frozenCompilationState = currentCompilationState.WithFrozenPartialCompilationsForCompletion(
++            documentId.ProjectId, cancellationToken);
+         var completionCompilationState = frozenCompilationState;
+ 
+         using var _3 = PooledDictionary<ProjectId, ArrayBuilder<DocumentState>>.GetInstance(out var changedDocumentStates);
+diff --git a/src/Workspaces/CoreTest/SolutionTests/SolutionTests.cs b/src/Workspaces/CoreTest/SolutionTests/SolutionTests.cs
+--- a/src/Workspaces/CoreTest/SolutionTests/SolutionTests.cs
++++ b/src/Workspaces/CoreTest/SolutionTests/SolutionTests.cs
+@@ -26,5 +26,118 @@
+         Assert.Equal(2, completionProjectDocuments.Count);
+     }
+ 
++    [Fact]
++    public async Task WithFrozenPartialSemanticsForCompletionCachesPerImmutableSolution()
++    {
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++
++        var project = SolutionUtilities.AddEmptyProject(workspace.CurrentSolution)
++            .AddDocument("Target.cs", SourceText.From("class Target { public int V1Member { get; } }"), filePath: "Target.cs").Project
++            .AddDocument("Consumer.cs", SourceText.From("class Consumer { void M(Target target) { target.ToString(); } }"), filePath: "Consumer.cs").Project;
++
++        var targetDocument = project.Documents.Single(static document => document.Name == "Target.cs");
++        var consumerDocument = project.Documents.Single(static document => document.Name == "Consumer.cs");
++
++        var firstFrozenDocument = consumerDocument.WithFrozenPartialSemanticsForCompletion(CancellationToken.None);
++        var secondFrozenDocument = consumerDocument.WithFrozenPartialSemanticsForCompletion(CancellationToken.None);
++
++        Assert.Same(firstFrozenDocument.Project.Solution, secondFrozenDocument.Project.Solution);
++
++        var solutionV2 = project.Solution.WithDocumentText(
++            targetDocument.Id,
++            SourceText.From("class Target { public int V2Member { get; } }"),
++            PreservationMode.PreserveIdentity);
++        var consumerV2 = solutionV2.GetRequiredDocument(consumerDocument.Id);
++        var frozenV2 = consumerV2.WithFrozenPartialSemanticsForCompletion(CancellationToken.None);
++
++        Assert.NotSame(firstFrozenDocument.Project.Solution, frozenV2.Project.Solution);
++
++        var frozenTargetV2 = frozenV2.Project.Solution.GetRequiredDocument(targetDocument.Id);
++        var frozenTargetText = (await frozenTargetV2.GetTextAsync()).ToString();
++        Assert.Contains("V2Member", frozenTargetText);
++        Assert.DoesNotContain("V1Member", frozenTargetText);
++    }
++
++    [Fact]
++    public async Task WithFrozenPartialSemanticsForCompletionPreservesWarmIncrementalProjectState()
++    {
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++
++        var project = SolutionUtilities.AddEmptyProject(workspace.CurrentSolution)
++            .AddDocument("Target.cs", SourceText.From("class Target { public int V1Member { get; } }"), filePath: "Target.cs").Project
++            .AddDocument("Consumer.cs", SourceText.From("class Consumer { void M(Target target) { target.ToString(); } }"), filePath: "Consumer.cs").Project;
++
++        Assert.True(workspace.SetCurrentSolution(_ => project.Solution, WorkspaceChangeKind.SolutionChanged));
++
++        var initialProject = workspace.CurrentSolution.Projects.Single();
++        Assert.NotNull(await initialProject.GetCompilationAsync());
++
++        var targetDocumentId = initialProject.Documents.Single(static document => document.Name == "Target.cs").Id;
++        var consumerDocumentId = initialProject.Documents.Single(static document => document.Name == "Consumer.cs").Id;
++        var solutionV2 = workspace.CurrentSolution.WithDocumentText(
++            targetDocumentId,
++            SourceText.From("class Target { public int V2Member { get; } }"),
++            PreservationMode.PreserveIdentity);
++        Assert.True(workspace.SetCurrentSolution(_ => solutionV2, WorkspaceChangeKind.SolutionChanged));
++
++        var currentSolution = workspace.CurrentSolution;
++        var currentProjectState = currentSolution.SolutionState.GetRequiredProjectState(initialProject.Id);
++        var completionDocument = currentSolution.GetRequiredDocument(consumerDocumentId)
++            .WithFrozenPartialSemanticsForCompletion(CancellationToken.None);
++        var frozenProjectState = completionDocument.Project.Solution.SolutionState.GetRequiredProjectState(initialProject.Id);
++
++        // The warm completion freeze should keep the current ProjectState and let the existing pending translation
++        // lineage carry the retained compilation forward.  0003's reapply safety net should have nothing to rebuild.
++        Assert.Same(currentProjectState, frozenProjectState);
++
++        var frozenCompilation = await completionDocument.Project.GetCompilationAsync();
++        var targetType = frozenCompilation!.GetTypeByMetadataName("Target");
++        Assert.NotNull(targetType);
++        Assert.Single(targetType.GetMembers("V2Member"));
++        Assert.Empty(targetType.GetMembers("V1Member"));
++    }
++
++    [Fact]
++    public async Task WithFrozenPartialSemanticsForCompletionPreservesWarmSameLanguageDependencyState()
++    {
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++        var targetProjectId = ProjectId.CreateNewId();
++        var consumerProjectId = ProjectId.CreateNewId();
++        var targetDocumentId = DocumentId.CreateNewId(targetProjectId);
++        var consumerDocumentId = DocumentId.CreateNewId(consumerProjectId);
++
++        var solution = workspace.CurrentSolution
++            .AddProject(targetProjectId, "TargetProject", "TargetProject", LanguageNames.CSharp)
++            .AddDocument(targetDocumentId, "Target.cs", SourceText.From("public class Target { public int V1Member { get; } }"), filePath: "Target.cs")
++            .AddProject(consumerProjectId, "ConsumerProject", "ConsumerProject", LanguageNames.CSharp)
++            .AddProjectReference(consumerProjectId, new ProjectReference(targetProjectId))
++            .AddDocument(consumerDocumentId, "Consumer.cs", SourceText.From("class Consumer { void M(Target target) { target.ToString(); } }"), filePath: "Consumer.cs");
++
++        Assert.True(workspace.SetCurrentSolution(_ => solution, WorkspaceChangeKind.SolutionChanged));
++        Assert.NotNull(await workspace.CurrentSolution.GetRequiredProject(consumerProjectId).GetCompilationAsync());
++
++        var solutionV2 = workspace.CurrentSolution.WithDocumentText(
++            targetDocumentId,
++            SourceText.From("public class Target { public int V2Member { get; } }"),
++            PreservationMode.PreserveIdentity);
++        Assert.True(workspace.SetCurrentSolution(_ => solutionV2, WorkspaceChangeKind.SolutionChanged));
++
++        var currentSolution = workspace.CurrentSolution;
++        var currentTargetProjectState = currentSolution.SolutionState.GetRequiredProjectState(targetProjectId);
++        var currentConsumerProjectState = currentSolution.SolutionState.GetRequiredProjectState(consumerProjectId);
++        var completionDocument = currentSolution.GetRequiredDocument(consumerDocumentId)
++            .WithFrozenPartialSemanticsForCompletion(CancellationToken.None);
++        var frozenSolution = completionDocument.Project.Solution;
++
++        Assert.Same(currentTargetProjectState, frozenSolution.SolutionState.GetRequiredProjectState(targetProjectId));
++        Assert.Same(currentConsumerProjectState, frozenSolution.SolutionState.GetRequiredProjectState(consumerProjectId));
++
++        var frozenCompilation = await completionDocument.Project.GetCompilationAsync();
++        var targetType = frozenCompilation!.GetTypeByMetadataName("Target");
++        Assert.NotNull(targetType);
++        Assert.Single(targetType.GetMembers("V2Member"));
++        Assert.Empty(targetType.GetMembers("V1Member"));
++    }
++
+     [Fact]
+     public void RemoveDocument_Errors()

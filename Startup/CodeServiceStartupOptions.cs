@@ -14,17 +14,20 @@ internal sealed class CodeServiceStartupOptions
     private const string GodotStartTimeUtcTicksOption = "--godot-start-time-utc-ticks";
     private const string DiagnosticLogOption = "--diagnostic-log";
     private const string RoslynRuntimeOption = "--roslyn-runtime";
+    private const string ProjectRootOption = "--project-root";
 
     private CodeServiceStartupOptions(
         CodeServiceStartupMode mode,
         GodotProcessIdentity godotOwnerIdentity,
         bool diagnosticLoggingEnabled,
-        RoslynLanguageServerRuntime? roslynRuntime)
+        RoslynLanguageServerRuntime? roslynRuntime,
+        WorkspaceIdentity? startupWorkspaceIdentity)
     {
         Mode = mode;
         GodotOwnerIdentity = godotOwnerIdentity;
         DiagnosticLoggingEnabled = diagnosticLoggingEnabled;
         RoslynRuntime = roslynRuntime;
+        StartupWorkspaceIdentity = startupWorkspaceIdentity;
     }
 
     public CodeServiceStartupMode Mode { get; }
@@ -34,6 +37,8 @@ internal sealed class CodeServiceStartupOptions
     public bool DiagnosticLoggingEnabled { get; }
 
     public RoslynLanguageServerRuntime? RoslynRuntime { get; }
+
+    public WorkspaceIdentity? StartupWorkspaceIdentity { get; }
 
     public static CodeServiceStartupOptionsParseResult TryParse(string[] args)
     {
@@ -54,6 +59,8 @@ internal sealed class CodeServiceStartupOptions
         bool diagnosticLoggingEnabled = false;
         RoslynLanguageServerRuntime? roslynRuntime = null;
         bool roslynRuntimeSpecified = false;
+        WorkspaceIdentity? startupWorkspaceIdentity = null;
+        bool projectRootSpecified = false;
 
         int index = 1;
         while (index < args.Length)
@@ -165,6 +172,35 @@ internal sealed class CodeServiceStartupOptions
                     roslynRuntime = runtimeValidation.Runtime;
                     break;
 
+                case ProjectRootOption:
+                    if (projectRootSpecified)
+                    {
+                        return CodeServiceStartupOptionsParseResult.Failure(
+                            $"duplicate option '{ProjectRootOption}'.");
+                    }
+
+                    projectRootSpecified = true;
+                    if (!TryReadOptionValue(
+                            args,
+                            ref index,
+                            option,
+                            out string projectRoot,
+                            out string? projectRootError))
+                    {
+                        return CodeServiceStartupOptionsParseResult.Failure(projectRootError!);
+                    }
+
+                    WorkspaceIdentityCreationResult workspaceIdentityResult =
+                        WorkspaceIdentity.TryCreate(projectRoot);
+                    if (!workspaceIdentityResult.IsSuccess)
+                    {
+                        return CodeServiceStartupOptionsParseResult.Failure(
+                            $"option '{ProjectRootOption}' is invalid: {workspaceIdentityResult.ErrorMessage}");
+                    }
+
+                    startupWorkspaceIdentity = workspaceIdentityResult.Identity;
+                    break;
+
                 default:
                     return CodeServiceStartupOptionsParseResult.Failure(
                         $"unknown option '{option}'.");
@@ -194,7 +230,8 @@ internal sealed class CodeServiceStartupOptions
                 CodeServiceStartupMode.Server,
                 ownerIdentity,
                 diagnosticLoggingEnabled,
-                roslynRuntime));
+                roslynRuntime,
+                startupWorkspaceIdentity));
     }
 
     private static bool TryReadOptionValue(

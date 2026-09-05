@@ -17,6 +17,7 @@ internal sealed class WorkspaceHost : IDisposable
 
     private WorkspaceState _state = WorkspaceState.Uninitialized;
     private WorkspaceIdentity? _workspaceIdentity;
+    private bool _initialProjectRootValidated;
     private WorkspacePublication? _workspacePublication;
     private WorkspaceFileChangeObserver? _changeObserver;
     private Timer? _debounceTimer;
@@ -37,7 +38,8 @@ internal sealed class WorkspaceHost : IDisposable
         WorkloadCoordinator workloadCoordinator,
         RoslynLanguageServerHost roslynLanguageServerHost,
         DocumentSynchronizationHost documentSynchronizationHost,
-        DiagnosticLogging diagnosticLogging)
+        DiagnosticLogging diagnosticLogging,
+        WorkspaceIdentity? startupWorkspaceIdentity = null)
     {
         _workloadCoordinator = workloadCoordinator
             ?? throw new ArgumentNullException(nameof(workloadCoordinator));
@@ -47,21 +49,41 @@ internal sealed class WorkspaceHost : IDisposable
             ?? throw new ArgumentNullException(nameof(documentSynchronizationHost));
         _diagnosticLogging = diagnosticLogging
             ?? throw new ArgumentNullException(nameof(diagnosticLogging));
+        _workspaceIdentity = startupWorkspaceIdentity;
         _projectDiscovery = new WorkspaceProjectDiscovery();
         _projectIndexHost = new ProjectIndexHost(_diagnosticLogging);
     }
 
-    public async Task<WorkspaceInitializationResult> InitializeAsync(string? projectRoot)
+    public Task<WorkspaceInitializationResult> InitializeAsync(string? projectRoot)
     {
         WorkspaceIdentityCreationResult identityResult = WorkspaceIdentity.TryCreate(projectRoot);
         if (!identityResult.IsSuccess)
         {
-            return WorkspaceInitializationResult.InvalidRequest(
-                GetStatusSnapshot(),
-                identityResult.ErrorMessage!);
+            return Task.FromResult(
+                WorkspaceInitializationResult.InvalidRequest(
+                    GetStatusSnapshot(),
+                    identityResult.ErrorMessage!));
         }
 
-        WorkspaceIdentity requestedIdentity = identityResult.Identity!;
+        return InitializeCoreAsync(
+            identityResult.Identity!,
+            WorkspaceInitializationSource.TransportRequest);
+    }
+
+    internal Task<WorkspaceInitializationResult> InitializeFromStartupAsync(
+        WorkspaceIdentity workspaceIdentity)
+    {
+        ArgumentNullException.ThrowIfNull(workspaceIdentity);
+
+        return InitializeCoreAsync(
+            workspaceIdentity,
+            WorkspaceInitializationSource.StartupProjectRoot);
+    }
+
+    private async Task<WorkspaceInitializationResult> InitializeCoreAsync(
+        WorkspaceIdentity requestedIdentity,
+        WorkspaceInitializationSource initializationSource)
+    {
         WorkloadExecutionLease lease;
         long workspaceGeneration;
         ProjectIndexReconciliationHints initializationHints;
@@ -94,12 +116,19 @@ internal sealed class WorkspaceHost : IDisposable
                     return WorkspaceInitializationResult.Busy(CreateStatusSnapshotLocked());
                 }
             }
-            else
+
+            if (!_initialProjectRootValidated)
             {
                 WorkspaceInitialRootValidationResult rootValidation =
                     WorkspaceIdentity.ValidateInitialGodotProjectRoot(requestedIdentity);
                 if (!rootValidation.IsSuccess)
                 {
+                    if (initializationSource == WorkspaceInitializationSource.StartupProjectRoot)
+                    {
+                        _state = WorkspaceState.Faulted;
+                        _faultKind = WorkspaceFaultKinds.InvalidProjectRoot;
+                    }
+
                     return WorkspaceInitializationResult.InvalidRequest(
                         CreateStatusSnapshotLocked(),
                         rootValidation.ErrorMessage!);
@@ -127,6 +156,7 @@ internal sealed class WorkspaceHost : IDisposable
                 _workspaceIdentity = requestedIdentity;
             }
 
+            _initialProjectRootValidated = true;
             operationTrigger = _state == WorkspaceState.Faulted
                 ? ProjectIndexOperationTrigger.ExplicitRetry
                 : ProjectIndexOperationTrigger.Initialization;
@@ -152,6 +182,11 @@ internal sealed class WorkspaceHost : IDisposable
         long initializationStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
         double discoveryDurationMs = 0;
         double indexDurationMs = 0;
+        double roslynReconcileDurationMs = 0;
+        double indexRoslynParallelDurationMs = 0;
+        double indexRoslynOverlapDurationMs = 0;
+        double documentReplayDurationMs = 0;
+        double publicationCommitDurationMs = 0;
         ProjectIndexOperationContext operationContext = new(
             operationTrigger,
             lease.OperationId,
@@ -164,6 +199,7 @@ internal sealed class WorkspaceHost : IDisposable
             _diagnosticLogging.WriteEvent(
                 "workspace_initialization_started",
                 new WorkspaceInitializationStartedDetails(
+                    initializationSource,
                     operationTrigger,
                     lease.OperationId,
                     workspaceGeneration,
@@ -206,6 +242,8 @@ internal sealed class WorkspaceHost : IDisposable
             }
 
             bool useCurrentGenerationForRetry;
+            WorkspacePublicationIdentity candidatePublicationIdentity;
+            WorkspacePublication? previousPublication;
             lock (_sync)
             {
                 if (_disposed
@@ -218,45 +256,6 @@ internal sealed class WorkspaceHost : IDisposable
                 _state = WorkspaceState.Indexing;
                 useCurrentGenerationForRetry = _requiresConservativeRevalidation
                     && _projectIndexHost.GetCurrentGenerationSnapshot() is not null;
-            }
-
-            long indexStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
-            ProjectIndexGeneration projectIndexGeneration;
-            if (useCurrentGenerationForRetry)
-            {
-                projectIndexGeneration = await _projectIndexHost.ReconcileCurrentAsync(
-                    candidateSnapshot,
-                    initializationHints,
-                    operationContext,
-                    lease.ServiceWorkShutdownToken).ConfigureAwait(false);
-            }
-            else
-            {
-                projectIndexGeneration = await _projectIndexHost.InitializeOrReconcileAsync(
-                    candidateSnapshot,
-                    initializationHints,
-                    operationContext,
-                    lease.ServiceWorkShutdownToken).ConfigureAwait(false);
-            }
-
-            if (diagnosticsEnabled)
-            {
-                indexDurationMs = Stopwatch.GetElapsedTime(
-                    indexStarted,
-                    Stopwatch.GetTimestamp()).TotalMilliseconds;
-            }
-
-            WorkspacePublicationIdentity candidatePublicationIdentity;
-            WorkspacePublication? previousPublication;
-            lock (_sync)
-            {
-                if (_disposed
-                    || _state == WorkspaceState.ShuttingDown
-                    || _workspaceGeneration != workspaceGeneration)
-                {
-                    return WorkspaceInitializationResult.Unavailable(CreateStatusSnapshotLocked());
-                }
-
                 candidatePublicationIdentity = new WorkspacePublicationIdentity(
                     workspaceGeneration,
                     checked(_workspacePublicationVersion + 1));
@@ -266,12 +265,60 @@ internal sealed class WorkspaceHost : IDisposable
             bool requiresRoslynGenerationReplacement = initializationHints.ForceFullSourceValidation
                 || (previousPublication is not null
                     && HasProjectTopologyChanged(previousPublication.ProjectSnapshot, candidateSnapshot));
-            RoslynProjectLoadResult roslynResult = await _roslynLanguageServerHost.ReconcileProjectLoadAsync(
-                candidateSnapshot,
-                candidatePublicationIdentity,
-                requiresRoslynGenerationReplacement,
-                lease.ServiceWorkShutdownToken).ConfigureAwait(false);
 
+            long indexRoslynParallelStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
+
+            Task<TimedOperationResult<RoslynProjectLoadResult>> roslynTask = MeasureOperationAsync(
+                () => _roslynLanguageServerHost.ReconcileProjectLoadAsync(
+                    candidateSnapshot,
+                    candidatePublicationIdentity,
+                    requiresRoslynGenerationReplacement,
+                    lease.ServiceWorkShutdownToken),
+                diagnosticsEnabled);
+
+            Task<TimedOperationResult<ProjectIndexGeneration>> indexTask = MeasureOperationAsync(
+                () => useCurrentGenerationForRetry
+                    ? _projectIndexHost.ReconcileCurrentAsync(
+                        candidateSnapshot,
+                        initializationHints,
+                        operationContext,
+                        lease.ServiceWorkShutdownToken)
+                    : _projectIndexHost.InitializeOrReconcileAsync(
+                        candidateSnapshot,
+                        initializationHints,
+                        operationContext,
+                        lease.ServiceWorkShutdownToken),
+                diagnosticsEnabled);
+
+            await Task.WhenAll(roslynTask, indexTask).ConfigureAwait(false);
+
+            if (diagnosticsEnabled)
+            {
+                indexRoslynParallelDurationMs = Stopwatch.GetElapsedTime(
+                    indexRoslynParallelStarted,
+                    Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
+
+            TimedOperationResult<RoslynProjectLoadResult> timedRoslynResult =
+                await roslynTask.ConfigureAwait(false);
+            TimedOperationResult<ProjectIndexGeneration> timedIndexResult =
+                await indexTask.ConfigureAwait(false);
+
+            RoslynProjectLoadResult roslynResult = timedRoslynResult.Result;
+            ProjectIndexGeneration projectIndexGeneration = timedIndexResult.Result;
+
+            if (diagnosticsEnabled)
+            {
+                roslynReconcileDurationMs = timedRoslynResult.DurationMs;
+                indexDurationMs = timedIndexResult.DurationMs;
+                indexRoslynOverlapDurationMs = Math.Max(
+                    0,
+                    indexDurationMs
+                        + roslynReconcileDurationMs
+                        - indexRoslynParallelDurationMs);
+            }
+
+            long documentReplayStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
             await _documentSynchronizationHost.ReconcileRoslynGenerationAsync(
                 candidateSnapshot,
                 candidatePublicationIdentity,
@@ -279,7 +326,14 @@ internal sealed class WorkspaceHost : IDisposable
                 roslynResult.ReusedExistingGeneration,
                 lease,
                 lease.ServiceWorkShutdownToken).ConfigureAwait(false);
+            if (diagnosticsEnabled)
+            {
+                documentReplayDurationMs = Stopwatch.GetElapsedTime(
+                    documentReplayStarted,
+                    Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
 
+            long publicationCommitStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
             RoslynLanguageServerSnapshot finalRoslynSnapshot = _roslynLanguageServerHost.GetSnapshot();
             ValidateRoslynPublicationCorrelation(
                 requestedIdentity,
@@ -312,6 +366,13 @@ internal sealed class WorkspaceHost : IDisposable
                 readyStatus = CreateStatusSnapshotLocked();
             }
 
+            if (diagnosticsEnabled)
+            {
+                publicationCommitDurationMs = Stopwatch.GetElapsedTime(
+                    publicationCommitStarted,
+                    Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
+
             WriteWorkspacePublicationCommitted(
                 candidatePublication,
                 roslynResult.ReusedExistingGeneration,
@@ -322,11 +383,17 @@ internal sealed class WorkspaceHost : IDisposable
                 double totalInitializationDurationMs = Stopwatch.GetElapsedTime(
                     initializationStarted,
                     Stopwatch.GetTimestamp()).TotalMilliseconds;
+                double explicitWorkDurationMs = discoveryDurationMs
+                    + indexRoslynParallelDurationMs
+                    + documentReplayDurationMs
+                    + publicationCommitDurationMs;
+                double unattributedDurationMs = totalInitializationDurationMs - explicitWorkDurationMs;
                 DiagnosticResourceSnapshot resources =
                     DiagnosticResourceSnapshot.CaptureIfEnabled(_diagnosticLogging);
                 _diagnosticLogging.WriteEvent(
                     "workspace_ready",
                     new WorkspaceReadyDetails(
+                        initializationSource,
                         operationTrigger,
                         lease.OperationId,
                         workspaceGeneration,
@@ -339,6 +406,13 @@ internal sealed class WorkspaceHost : IDisposable
                         candidateSnapshot.SolutionFiles.Count,
                         discoveryDurationMs,
                         indexDurationMs,
+                        roslynReconcileDurationMs,
+                        indexRoslynParallelDurationMs,
+                        indexRoslynOverlapDurationMs,
+                        documentReplayDurationMs,
+                        publicationCommitDurationMs,
+                        explicitWorkDurationMs,
+                        unattributedDurationMs,
                         totalInitializationDurationMs,
                         resources.WorkingSetBytes,
                         resources.ManagedMemoryBytes));
@@ -406,6 +480,7 @@ internal sealed class WorkspaceHost : IDisposable
                     "workspace_fault",
                     exception,
                     new WorkspaceInitializationFaultDetails(
+                        initializationSource,
                         operationTrigger,
                         lease.OperationId,
                         workspaceGeneration,
@@ -425,6 +500,18 @@ internal sealed class WorkspaceHost : IDisposable
             newlyStartedObserver?.Dispose();
             lease.Retire();
         }
+    }
+
+    private static async Task<TimedOperationResult<TResult>> MeasureOperationAsync<TResult>(
+        Func<Task<TResult>> operation,
+        bool diagnosticsEnabled)
+    {
+        long started = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
+        TResult result = await operation().ConfigureAwait(false);
+        double durationMs = diagnosticsEnabled
+            ? Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds
+            : 0;
+        return new TimedOperationResult<TResult>(result, durationMs);
     }
 
     public WorkspaceStatusSnapshot GetStatusSnapshot()
@@ -495,6 +582,7 @@ internal sealed class WorkspaceHost : IDisposable
             _disposed = true;
             _state = WorkspaceState.ShuttingDown;
             _workspaceIdentity = null;
+            _initialProjectRootValidated = false;
             _workspacePublication = null;
             _faultKind = null;
             _pendingDirtyIntent.Clear();
@@ -728,6 +816,9 @@ internal sealed class WorkspaceHost : IDisposable
         long totalStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
         double discoveryDurationMs = 0;
         double indexDurationMs = 0;
+        double roslynReconcileDurationMs = 0;
+        double documentReplayDurationMs = 0;
+        double publicationCommitDurationMs = 0;
         ProjectIndexOperationContext operationContext = new(
             ProjectIndexOperationTrigger.RuntimeFilesystem,
             lease.OperationId,
@@ -787,12 +878,20 @@ internal sealed class WorkspaceHost : IDisposable
             bool requiresRoslynGenerationReplacement = batch.ForceRoslynProjectReload
                 || HasProjectTopologyChanged(previousPublication.ProjectSnapshot, candidateSnapshot);
 
+            long roslynReconcileStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
             RoslynProjectLoadResult roslynResult = await _roslynLanguageServerHost.ReconcileProjectLoadAsync(
                 candidateSnapshot,
                 candidatePublicationIdentity,
                 requiresRoslynGenerationReplacement,
                 lease.ServiceWorkShutdownToken).ConfigureAwait(false);
+            if (diagnosticsEnabled)
+            {
+                roslynReconcileDurationMs = Stopwatch.GetElapsedTime(
+                    roslynReconcileStarted,
+                    Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
 
+            long documentReplayStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
             await _documentSynchronizationHost.ReconcileRoslynGenerationAsync(
                 candidateSnapshot,
                 candidatePublicationIdentity,
@@ -800,7 +899,14 @@ internal sealed class WorkspaceHost : IDisposable
                 roslynResult.ReusedExistingGeneration,
                 lease,
                 lease.ServiceWorkShutdownToken).ConfigureAwait(false);
+            if (diagnosticsEnabled)
+            {
+                documentReplayDurationMs = Stopwatch.GetElapsedTime(
+                    documentReplayStarted,
+                    Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
 
+            long publicationCommitStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
             RoslynLanguageServerSnapshot finalRoslynSnapshot = _roslynLanguageServerHost.GetSnapshot();
             ValidateRoslynPublicationCorrelation(
                 workspaceIdentity,
@@ -832,6 +938,13 @@ internal sealed class WorkspaceHost : IDisposable
                 ArmPendingDirtyLocked();
             }
 
+            if (diagnosticsEnabled)
+            {
+                publicationCommitDurationMs = Stopwatch.GetElapsedTime(
+                    publicationCommitStarted,
+                    Stopwatch.GetTimestamp()).TotalMilliseconds;
+            }
+
             WriteWorkspacePublicationCommitted(
                 candidatePublication,
                 roslynResult.ReusedExistingGeneration,
@@ -839,6 +952,15 @@ internal sealed class WorkspaceHost : IDisposable
 
             if (diagnosticsEnabled)
             {
+                double totalDurationMs = Stopwatch.GetElapsedTime(
+                    totalStarted,
+                    Stopwatch.GetTimestamp()).TotalMilliseconds;
+                double explicitWorkDurationMs = discoveryDurationMs
+                    + indexDurationMs
+                    + roslynReconcileDurationMs
+                    + documentReplayDurationMs
+                    + publicationCommitDurationMs;
+                double unattributedDurationMs = totalDurationMs - explicitWorkDurationMs;
                 _diagnosticLogging.WriteEvent(
                     "workspace_reconciliation_completed",
                     new WorkspaceReconciliationCompletedDetails(
@@ -858,7 +980,12 @@ internal sealed class WorkspaceHost : IDisposable
                         candidateSnapshot.SolutionFiles.Count,
                         discoveryDurationMs,
                         indexDurationMs,
-                        Stopwatch.GetElapsedTime(totalStarted, Stopwatch.GetTimestamp()).TotalMilliseconds));
+                        roslynReconcileDurationMs,
+                        documentReplayDurationMs,
+                        publicationCommitDurationMs,
+                        explicitWorkDurationMs,
+                        unattributedDurationMs,
+                        totalDurationMs));
             }
             else
             {
@@ -1139,6 +1266,10 @@ internal sealed class WorkspaceHost : IDisposable
             IOException => WorkspaceFaultKinds.IoError,
             _ => WorkspaceFaultKinds.DiscoveryError,
         };
+
+    private readonly record struct TimedOperationResult<TResult>(
+        TResult Result,
+        double DurationMs);
 
     private readonly record struct ObserverResources(
         WorkspaceFileChangeObserver? Observer,

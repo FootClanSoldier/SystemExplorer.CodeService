@@ -13,7 +13,9 @@ internal sealed class CodeServiceHost : IAsyncDisposable
     private readonly DocumentCompletionHost _documentCompletionHost;
     private readonly LocalTransportHost _localTransportHost;
     private readonly BootstrapReadinessWriter _bootstrapReadinessWriter;
+    private readonly WorkspaceIdentity? _startupWorkspaceIdentity;
     private readonly object _shutdownSync = new();
+    private Task? _startupWorkspaceInitializationTask;
     private Task? _shutdownTask;
     private int _runState;
 
@@ -28,7 +30,8 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         DocumentSemanticReadinessHost documentSemanticReadinessHost,
         DocumentCompletionHost documentCompletionHost,
         LocalTransportHost localTransportHost,
-        BootstrapReadinessWriter bootstrapReadinessWriter)
+        BootstrapReadinessWriter bootstrapReadinessWriter,
+        WorkspaceIdentity? startupWorkspaceIdentity)
     {
         _godotProcessLifetime = godotProcessLifetime;
         _sessionCoordinator = sessionCoordinator;
@@ -41,6 +44,7 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         _documentCompletionHost = documentCompletionHost;
         _localTransportHost = localTransportHost;
         _bootstrapReadinessWriter = bootstrapReadinessWriter;
+        _startupWorkspaceIdentity = startupWorkspaceIdentity;
     }
 
     public static async Task<CodeServiceHostCreationResult> TryCreateAsync(
@@ -159,6 +163,8 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                         semanticReusePatchSha256 = validatedRoslynRuntime.VerifiedSemanticReusePatchSha256,
                         semanticReuseSourceCommit = validatedRoslynRuntime.VerifiedSemanticReuseSourceCommit,
                         completionSemanticOriginPatchSha256 = validatedRoslynRuntime.VerifiedCompletionSemanticOriginPatchSha256,
+                        currentSourceFrozenPartialPatchSha256 = validatedRoslynRuntime.VerifiedCurrentSourceFrozenPartialPatchSha256,
+                        completionIncrementalReusePatchSha256 = validatedRoslynRuntime.VerifiedCompletionIncrementalReusePatchSha256,
                         provenance = "systemexplorer-private-patched-build",
                     });
             }
@@ -357,7 +363,8 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                 workloadCoordinator,
                 roslynLanguageServerHost,
                 documentSynchronizationHost,
-                diagnosticLogging);
+                diagnosticLogging,
+                startupOptions.StartupWorkspaceIdentity);
         }
         catch (Exception exception)
         {
@@ -420,7 +427,6 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                 workloadCoordinator,
                 workspaceHost,
                 documentSynchronizationHost,
-                documentSemanticReadinessHost,
                 roslynLanguageServerHost,
                 diagnosticLogging);
             diagnosticLogging.WriteEvent("completion_host_started");
@@ -459,7 +465,8 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                 workspaceHost,
                 documentSynchronizationHost,
                 documentSemanticReadinessHost,
-                documentCompletionHost);
+                documentCompletionHost,
+                diagnosticLogging);
         }
         catch (Exception exception)
         {
@@ -581,7 +588,8 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                     documentSemanticReadinessHost,
                     documentCompletionHost,
                     localTransportHost,
-                    bootstrapReadinessWriter),
+                    bootstrapReadinessWriter,
+                    startupOptions.StartupWorkspaceIdentity),
                 diagnosticLogging.LogPath,
                 loggingResult.WarningMessage);
         }
@@ -657,6 +665,11 @@ internal sealed class CodeServiceHost : IAsyncDisposable
             }
         }
 
+        if (!ownerExitTask.IsCompleted && !transportCompletionTask.IsCompleted)
+        {
+            TryStartStartupWorkspaceInitialization();
+        }
+
         await Task.WhenAny(ownerExitTask, transportCompletionTask).ConfigureAwait(false);
 
         if (ownerExitTask.IsCompleted)
@@ -705,6 +718,100 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         {
             // ShutdownCoreAsync records cleanup failures before diagnostics retire.
         }
+    }
+
+    private void TryStartStartupWorkspaceInitialization()
+    {
+        if (_startupWorkspaceIdentity is not WorkspaceIdentity workspaceIdentity)
+        {
+            return;
+        }
+
+        lock (_shutdownSync)
+        {
+            if (_shutdownTask is not null || _startupWorkspaceInitializationTask is not null)
+            {
+                return;
+            }
+
+            _startupWorkspaceInitializationTask =
+                RunStartupWorkspaceInitializationAsync(workspaceIdentity);
+        }
+    }
+
+    private async Task RunStartupWorkspaceInitializationAsync(
+        WorkspaceIdentity workspaceIdentity)
+    {
+        await Task.Yield();
+
+        _diagnosticLogging.WriteEvent("startup_workspace_initialization_started");
+
+        try
+        {
+            WorkspaceInitializationResult result =
+                await _workspaceHost.InitializeFromStartupAsync(workspaceIdentity)
+                    .ConfigureAwait(false);
+
+            _diagnosticLogging.WriteEvent(
+                "startup_workspace_initialization_completed",
+                new StartupWorkspaceInitializationCompletedDetails(
+                    result.Outcome,
+                    result.Status.State,
+                    result.Status.FaultKind,
+                    result.ReusedExistingWorkspace));
+        }
+        catch (Exception exception)
+        {
+            WorkspaceState workspaceState = _workspaceHost.GetStatusSnapshot().State;
+            InvalidOperationException boundedFault = new(
+                CreateBoundedStartupWorkspaceFaultMessage(exception));
+
+            _diagnosticLogging.WriteFault(
+                "startup_workspace_initialization_fault",
+                boundedFault,
+                new StartupWorkspaceInitializationFaultDetails(workspaceState));
+        }
+    }
+
+    private async Task<Exception?> ObserveStartupWorkspaceInitializationNoThrowAsync()
+    {
+        Task? startupTask;
+        lock (_shutdownSync)
+        {
+            startupTask = _startupWorkspaceInitializationTask;
+        }
+
+        if (startupTask is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            await startupTask.ConfigureAwait(false);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            InvalidOperationException boundedFault = new(
+                CreateBoundedStartupWorkspaceFaultMessage(exception));
+            _diagnosticLogging.WriteFault(
+                "startup_workspace_initialization_fault",
+                boundedFault,
+                new StartupWorkspaceInitializationFaultDetails(
+                    _workspaceHost.GetStatusSnapshot().State));
+            return boundedFault;
+        }
+    }
+
+    private static string CreateBoundedStartupWorkspaceFaultMessage(Exception exception)
+    {
+        const int maxLength = 512;
+        string typeName = exception.GetType().FullName ?? exception.GetType().Name;
+        string message = $"{typeName}: {ToSingleLine(exception.Message)}";
+        return message.Length <= maxLength
+            ? message
+            : message[..maxLength];
     }
 
     private Task EnsureShutdownAsync()
@@ -790,6 +897,13 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         if (roslynRetirementFailure is not null)
         {
             shutdownFailure ??= roslynRetirementFailure;
+        }
+
+        Exception? startupWorkspaceObservationFailure =
+            await ObserveStartupWorkspaceInitializationNoThrowAsync().ConfigureAwait(false);
+        if (startupWorkspaceObservationFailure is not null)
+        {
+            shutdownFailure ??= startupWorkspaceObservationFailure;
         }
 
         Exception? completionRetirementFailure = DisposeCompletionNoThrow(_documentCompletionHost, _diagnosticLogging);

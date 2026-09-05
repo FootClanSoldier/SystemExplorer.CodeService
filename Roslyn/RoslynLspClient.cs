@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -187,31 +188,57 @@ internal sealed class RoslynLspClient : IAsyncDisposable
 
     public async Task<RoslynDiagnosticPullResult> PullDocumentDiagnosticsAsync(
         string absolutePath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool captureTimings)
     {
         ArgumentException.ThrowIfNullOrEmpty(absolutePath);
+        long operationStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
         if (!IsDiagnosticCapabilityAvailable)
         {
-            return RoslynDiagnosticPullResult.Unavailable();
+            return RoslynDiagnosticPullResult.Unavailable(
+                CreateDiagnosticTiming(captureTimings, operationStarted, null, null));
         }
 
         using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(RoslynLanguageServerConstants.SemanticReadinessTimeout);
+        long rpcStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
         try
         {
             JsonElement result = await _rpc.InvokeWithParameterObjectAsync<JsonElement>(
                 "textDocument/diagnostic",
                 new RoslynDocumentDiagnosticParams(new RoslynTextDocumentIdentifier(ToFileUri(absolutePath)), Identifier: null, PreviousResultId: null),
                 deadline.Token).ConfigureAwait(false);
-            return RoslynDiagnosticPullResult.Success(CountDiagnostics(result));
+            double? rpcDurationMs = GetElapsedMilliseconds(captureTimings, rpcStarted);
+
+            long inspectionStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
+            int diagnosticCount = CountDiagnostics(result);
+            double? inspectionDurationMs = GetElapsedMilliseconds(captureTimings, inspectionStarted);
+
+            return RoslynDiagnosticPullResult.Success(
+                diagnosticCount,
+                CreateDiagnosticTiming(
+                    captureTimings,
+                    operationStarted,
+                    rpcDurationMs,
+                    inspectionDurationMs));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
         {
-            return RoslynDiagnosticPullResult.Timeout();
+            return RoslynDiagnosticPullResult.Timeout(
+                CreateDiagnosticTiming(
+                    captureTimings,
+                    operationStarted,
+                    GetElapsedMilliseconds(captureTimings, rpcStarted),
+                    null));
         }
         catch (TimeoutException) when (!cancellationToken.IsCancellationRequested)
         {
-            return RoslynDiagnosticPullResult.Timeout();
+            return RoslynDiagnosticPullResult.Timeout(
+                CreateDiagnosticTiming(
+                    captureTimings,
+                    operationStarted,
+                    GetElapsedMilliseconds(captureTimings, rpcStarted),
+                    null));
         }
     }
 
@@ -222,7 +249,8 @@ internal sealed class RoslynLspClient : IAsyncDisposable
         string absolutePath,
         int line,
         int character,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool captureTimings)
     {
         ArgumentException.ThrowIfNullOrEmpty(absolutePath);
         if (line < 0)
@@ -233,14 +261,18 @@ internal sealed class RoslynLspClient : IAsyncDisposable
         {
             throw new ArgumentOutOfRangeException(nameof(character), character, "LSP completion character must be non-negative.");
         }
+
+        long operationStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
         if (!IsCompletionCapabilityAvailable)
         {
-            return RoslynCompletionClientResult.Unavailable();
+            return RoslynCompletionClientResult.Unavailable(
+                CreateCompletionTiming(captureTimings, operationStarted, null, null));
         }
 
         using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(RoslynLanguageServerConstants.CompletionTimeout);
 
+        long rpcStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
         try
         {
             JsonElement result = await _rpc.InvokeWithParameterObjectAsync<JsonElement>(
@@ -249,18 +281,65 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                     new RoslynTextDocumentIdentifier(ToFileUri(absolutePath)),
                     new RoslynPosition(line, character)),
                 deadline.Token).ConfigureAwait(false);
+            double? rpcDurationMs = GetElapsedMilliseconds(captureTimings, rpcStarted);
 
-            return NormalizeCompletionResponse(result);
+            long normalizationStarted = captureTimings ? Stopwatch.GetTimestamp() : 0;
+            RoslynCompletionClientResult normalized = NormalizeCompletionResponse(result);
+            double? normalizationDurationMs = GetElapsedMilliseconds(captureTimings, normalizationStarted);
+
+            return normalized with
+            {
+                Timing = CreateCompletionTiming(
+                    captureTimings,
+                    operationStarted,
+                    rpcDurationMs,
+                    normalizationDurationMs),
+            };
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
         {
-            return RoslynCompletionClientResult.Timeout();
+            return RoslynCompletionClientResult.Timeout(
+                CreateCompletionTiming(
+                    captureTimings,
+                    operationStarted,
+                    GetElapsedMilliseconds(captureTimings, rpcStarted),
+                    null));
         }
         catch (TimeoutException) when (!cancellationToken.IsCancellationRequested)
         {
-            return RoslynCompletionClientResult.Timeout();
+            return RoslynCompletionClientResult.Timeout(
+                CreateCompletionTiming(
+                    captureTimings,
+                    operationStarted,
+                    GetElapsedMilliseconds(captureTimings, rpcStarted),
+                    null));
         }
     }
+
+    private static RoslynDiagnosticPullTiming CreateDiagnosticTiming(
+        bool captureTimings,
+        long operationStarted,
+        double? rpcDurationMs,
+        double? responseInspectionDurationMs)
+        => new(
+            rpcDurationMs,
+            responseInspectionDurationMs,
+            GetElapsedMilliseconds(captureTimings, operationStarted));
+
+    private static RoslynCompletionClientTiming CreateCompletionTiming(
+        bool captureTimings,
+        long operationStarted,
+        double? rpcDurationMs,
+        double? normalizationDurationMs)
+        => new(
+            rpcDurationMs,
+            normalizationDurationMs,
+            GetElapsedMilliseconds(captureTimings, operationStarted));
+
+    private static double? GetElapsedMilliseconds(bool captureTimings, long started)
+        => captureTimings
+            ? Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds
+            : null;
 
     private static RoslynCompletionClientResult NormalizeCompletionResponse(JsonElement result)
     {
@@ -729,11 +808,25 @@ internal sealed class RoslynLspClient : IAsyncDisposable
 
 
 internal enum RoslynDiagnosticPullOutcome { Success, Unavailable, Timeout }
-internal readonly record struct RoslynDiagnosticPullResult(RoslynDiagnosticPullOutcome Outcome, int DiagnosticCount)
+
+internal readonly record struct RoslynDiagnosticPullTiming(
+    double? RpcDurationMs,
+    double? ResponseInspectionDurationMs,
+    double? TotalDurationMs);
+
+internal readonly record struct RoslynDiagnosticPullResult(
+    RoslynDiagnosticPullOutcome Outcome,
+    int DiagnosticCount,
+    RoslynDiagnosticPullTiming Timing)
 {
-    public static RoslynDiagnosticPullResult Success(int count) => new(RoslynDiagnosticPullOutcome.Success, count);
-    public static RoslynDiagnosticPullResult Unavailable() => new(RoslynDiagnosticPullOutcome.Unavailable, 0);
-    public static RoslynDiagnosticPullResult Timeout() => new(RoslynDiagnosticPullOutcome.Timeout, 0);
+    public static RoslynDiagnosticPullResult Success(int count, RoslynDiagnosticPullTiming timing)
+        => new(RoslynDiagnosticPullOutcome.Success, count, timing);
+
+    public static RoslynDiagnosticPullResult Unavailable(RoslynDiagnosticPullTiming timing)
+        => new(RoslynDiagnosticPullOutcome.Unavailable, 0, timing);
+
+    public static RoslynDiagnosticPullResult Timeout(RoslynDiagnosticPullTiming timing)
+        => new(RoslynDiagnosticPullOutcome.Timeout, 0, timing);
 }
 
 internal sealed record RoslynCompletionItem(
@@ -754,21 +847,27 @@ internal enum RoslynCompletionClientOutcome
     MalformedResponse,
 }
 
+internal readonly record struct RoslynCompletionClientTiming(
+    double? RpcDurationMs,
+    double? NormalizationDurationMs,
+    double? TotalDurationMs);
+
 internal readonly record struct RoslynCompletionClientResult(
     RoslynCompletionClientOutcome Outcome,
     IReadOnlyList<RoslynCompletionItem> Items,
     bool IsIncomplete,
-    int RawItemCount)
+    int RawItemCount,
+    RoslynCompletionClientTiming Timing)
 {
     public static RoslynCompletionClientResult Success(IReadOnlyList<RoslynCompletionItem> items, bool isIncomplete, int rawItemCount)
-        => new(RoslynCompletionClientOutcome.Success, items, isIncomplete, rawItemCount);
+        => new(RoslynCompletionClientOutcome.Success, items, isIncomplete, rawItemCount, default);
 
-    public static RoslynCompletionClientResult Unavailable()
-        => new(RoslynCompletionClientOutcome.Unavailable, [], false, 0);
+    public static RoslynCompletionClientResult Unavailable(RoslynCompletionClientTiming timing = default)
+        => new(RoslynCompletionClientOutcome.Unavailable, [], false, 0, timing);
 
-    public static RoslynCompletionClientResult Timeout()
-        => new(RoslynCompletionClientOutcome.Timeout, [], false, 0);
+    public static RoslynCompletionClientResult Timeout(RoslynCompletionClientTiming timing = default)
+        => new(RoslynCompletionClientOutcome.Timeout, [], false, 0, timing);
 
     public static RoslynCompletionClientResult Malformed()
-        => new(RoslynCompletionClientOutcome.MalformedResponse, [], false, 0);
+        => new(RoslynCompletionClientOutcome.MalformedResponse, [], false, 0, default);
 }

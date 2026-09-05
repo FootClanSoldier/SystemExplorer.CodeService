@@ -16,6 +16,7 @@ internal sealed class DocumentSynchronizationHost : IDisposable
     private DocumentClientAuthority? _authority;
     private long _totalTrackedSnapshotUtf8Bytes;
     private long _roslynOverlayRevision;
+    private CancellationTokenSource? _roslynOverlayRevisionLifetimeSource = new();
     private bool _shuttingDown;
     private bool _disposed;
 
@@ -179,14 +180,16 @@ internal sealed class DocumentSynchronizationHost : IDisposable
 
                 foreach (TrackedDocumentState state in _documents.Values)
                 {
-                    if (!candidateOpenDocuments.TryGetValue(
+                    if (candidateOpenDocuments.TryGetValue(
                             state.Identity.RelativePath,
                             out DocumentIdentity? retainedIdentity))
                     {
-                        continue;
+                        state.Identity = retainedIdentity;
                     }
 
-                    state.Identity = retainedIdentity;
+                    // A new client authority must explicitly re-establish every retained snapshot.
+                    // Removed states are also made non-authoritative immediately because feature lanes
+                    // may now overlap epoch reconciliation while Roslyn closes are still retiring.
                     state.LastAcceptedClientVersion = 0;
                     state.HasCurrentAuthoritySnapshot = false;
                 }
@@ -201,8 +204,11 @@ internal sealed class DocumentSynchronizationHost : IDisposable
         {
             closeCancellationToken.ThrowIfCancellationRequested();
 
-            if (state.IsOpenInRoslyn
-                && state.RoslynGeneration == publication.RoslynSnapshot.RoslynGeneration)
+            bool roslynCloseWasRequired = state.IsOpenInRoslyn
+                && state.RoslynGeneration == publication.RoslynSnapshot.RoslynGeneration;
+            RoslynDocumentSendTiming closeTiming = default;
+
+            if (roslynCloseWasRequired)
             {
                 RoslynDocumentSendResult closeResult = await _roslynLanguageServerHost.CloseDocumentAsync(
                     publication.WorkspaceIdentity,
@@ -211,6 +217,7 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                     state.Identity,
                     closeCancellationToken).ConfigureAwait(false);
 
+                closeTiming = closeResult.Timing;
                 if (!closeResult.IsSuccess)
                 {
                     MarkRoslynCorrelationsUnavailable(publication.RoslynSnapshot.RoslynGeneration);
@@ -225,23 +232,26 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                         request,
                         publication);
                 }
-            }
 
-            if (state.IsOpenInRoslyn
-                && state.RoslynGeneration == publication.RoslynSnapshot.RoslynGeneration)
-            {
+                CancellationTokenSource supersededOverlayLifetimeSource;
                 lock (_sync)
                 {
-                    AdvanceRoslynOverlayRevisionLocked();
+                    supersededOverlayLifetimeSource = AdvanceRoslynOverlayRevisionLocked();
+                    state.IsOpenInRoslyn = false;
+                    state.RoslynGeneration = 0;
+                    state.RoslynLspVersion = 0;
                 }
+
+                CancelAndDisposeRoslynOverlayRevisionSourceNoThrow(supersededOverlayLifetimeSource);
             }
 
             WriteDocumentClosed(
                 request,
                 publication,
+                lease.OperationId,
                 state.Identity.RelativePath,
-                state.IsOpenInRoslyn
-                    && state.RoslynGeneration == publication.RoslynSnapshot.RoslynGeneration);
+                roslynCloseWasRequired,
+                closeTiming);
 
             if (authorityTakeover)
             {
@@ -298,6 +308,10 @@ internal sealed class DocumentSynchronizationHost : IDisposable
         ArgumentNullException.ThrowIfNull(publication);
         ValidateDocumentTransportLease(lease);
         cancellationToken.ThrowIfCancellationRequested();
+
+        DocumentSnapshotTimingState? timing = _diagnosticLogging.IsEnabled
+            ? new DocumentSnapshotTimingState()
+            : null;
 
         if (!IsRoslynUsableForPublication(publication))
         {
@@ -416,13 +430,20 @@ internal sealed class DocumentSynchronizationHost : IDisposable
             {
                 if (string.Equals(request.Text, existingState.LastFullSnapshotText, StringComparison.Ordinal))
                 {
+                    timing?.CompletePreRoslynValidation();
+                    timing?.CompleteSnapshotPipeline();
                     WriteSnapshotAccepted(
                         request,
                         publication,
+                        lease.OperationId,
                         DocumentSynchronizationOutcome.AlreadyCurrent,
                         identity.RelativePath,
                         acceptedClientVersion,
-                        existingRoslynVersion);
+                        existingRoslynVersion,
+                        _roslynOverlayRevision,
+                        RoslynNotificationKind.None,
+                        timing,
+                        default);
                     return new DocumentSnapshotOperationResult(
                         DocumentSynchronizationOutcome.AlreadyCurrent,
                         request.ClientGeneration,
@@ -469,6 +490,8 @@ internal sealed class DocumentSynchronizationHost : IDisposable
 
             if (openInCurrentGeneration && textMatchesStored)
             {
+                timing?.CompletePreRoslynValidation();
+                long unchangedOverlayStateCommitStarted = timing?.StartPhase() ?? 0;
                 CommitSnapshotLocked(
                     existingState!,
                     identity,
@@ -477,14 +500,21 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                     existingState!.RoslynGeneration,
                     existingState.RoslynLspVersion,
                     isOpenInRoslyn: true);
+                timing?.CompleteStateCommit(unchangedOverlayStateCommitStarted);
+                timing?.CompleteSnapshotPipeline();
 
                 WriteSnapshotAccepted(
                     request,
                     publication,
+                    lease.OperationId,
                     DocumentSynchronizationOutcome.Success,
                     identity.RelativePath,
                     request.ClientVersion,
-                    existingState.RoslynLspVersion);
+                    existingState.RoslynLspVersion,
+                    _roslynOverlayRevision,
+                    RoslynNotificationKind.None,
+                    timing,
+                    default);
                 return new DocumentSnapshotOperationResult(
                     DocumentSynchronizationOutcome.Success,
                     request.ClientGeneration,
@@ -520,6 +550,11 @@ internal sealed class DocumentSynchronizationHost : IDisposable
             }
         }
 
+        timing?.CompletePreRoslynValidation();
+        RoslynNotificationKind notificationKind = needsOpen
+            ? RoslynNotificationKind.DidOpen
+            : RoslynNotificationKind.DidChange;
+        long roslynSendStarted = timing?.StartPhase() ?? 0;
         RoslynDocumentSendResult sendResult;
         if (needsOpen)
         {
@@ -548,6 +583,8 @@ internal sealed class DocumentSynchronizationHost : IDisposable
             throw new InvalidOperationException("document synchronization reached a send boundary without an open or change operation.");
         }
 
+        timing?.CompleteRoslynSend(roslynSendStarted);
+
         if (!sendResult.IsSuccess)
         {
             MarkRoslynCorrelationsUnavailable(publication.RoslynSnapshot.RoslynGeneration);
@@ -561,6 +598,9 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                 existingRoslynVersion);
         }
 
+        CancellationTokenSource supersededOverlayLifetimeSource;
+        long committedRoslynOverlayRevision;
+        long stateCommitStarted = timing?.StartPhase() ?? 0;
         lock (_sync)
         {
             if (_disposed || _shuttingDown)
@@ -580,7 +620,7 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                 _documents.Add(identity.RelativePath, state);
             }
 
-            AdvanceRoslynOverlayRevisionLocked();
+            supersededOverlayLifetimeSource = AdvanceRoslynOverlayRevisionLocked();
             CommitSnapshotLocked(
                 state,
                 identity,
@@ -589,15 +629,28 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                 publication.RoslynSnapshot.RoslynGeneration,
                 targetRoslynVersion,
                 isOpenInRoslyn: true);
+            committedRoslynOverlayRevision = _roslynOverlayRevision;
         }
+
+        timing?.CompleteStateCommit(stateCommitStarted);
+
+        long overlayCancellationStarted = timing?.StartPhase() ?? 0;
+        CancelAndDisposeRoslynOverlayRevisionSourceNoThrow(supersededOverlayLifetimeSource);
+        timing?.CompleteOverlayCancellationSignal(overlayCancellationStarted);
+        timing?.CompleteSnapshotPipeline();
 
         WriteSnapshotAccepted(
             request,
             publication,
+            lease.OperationId,
             DocumentSynchronizationOutcome.Success,
             identity.RelativePath,
             request.ClientVersion,
-            targetRoslynVersion);
+            targetRoslynVersion,
+            committedRoslynOverlayRevision,
+            notificationKind,
+            timing,
+            sendResult.Timing);
 
         return new DocumentSnapshotOperationResult(
             DocumentSynchronizationOutcome.Success,
@@ -704,6 +757,7 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                 return new DocumentRoslynReplayResult(replayed, Completed: false, RoslynAvailable: false);
             }
 
+            CancellationTokenSource supersededOverlayLifetimeSource;
             lock (_sync)
             {
                 if (_disposed || _shuttingDown)
@@ -711,13 +765,14 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                     return new DocumentRoslynReplayResult(replayed, Completed: false, RoslynAvailable: false);
                 }
 
-                AdvanceRoslynOverlayRevisionLocked();
+                supersededOverlayLifetimeSource = AdvanceRoslynOverlayRevisionLocked();
                 state.IsOpenInRoslyn = true;
                 state.RoslynGeneration = roslynSnapshot.RoslynGeneration;
                 state.RoslynLspVersion = 1;
                 state.LastWorkspacePublicationIdentity = candidatePublicationIdentity;
             }
 
+            CancelAndDisposeRoslynOverlayRevisionSourceNoThrow(supersededOverlayLifetimeSource);
             replayed++;
         }
 
@@ -768,6 +823,36 @@ internal sealed class DocumentSynchronizationHost : IDisposable
         }
     }
 
+    public bool TryGetRoslynOverlayRevisionToken(
+        long expectedRevision,
+        out CancellationToken token)
+    {
+        lock (_sync)
+        {
+            if (_disposed
+                || _shuttingDown
+                || expectedRevision != _roslynOverlayRevision
+                || _roslynOverlayRevisionLifetimeSource is null)
+            {
+                token = default;
+                return false;
+            }
+
+            token = _roslynOverlayRevisionLifetimeSource.Token;
+            return true;
+        }
+    }
+
+    public bool IsRoslynOverlayRevisionSuperseded(long expectedRevision)
+    {
+        lock (_sync)
+        {
+            return !_disposed
+                && !_shuttingDown
+                && expectedRevision != _roslynOverlayRevision;
+        }
+    }
+
     public bool TryGetCurrentAuthority(out DocumentClientAuthority authority)
     {
         lock (_sync)
@@ -783,7 +868,7 @@ internal sealed class DocumentSynchronizationHost : IDisposable
         }
     }
 
-    private void AdvanceRoslynOverlayRevisionLocked()
+    private CancellationTokenSource AdvanceRoslynOverlayRevisionLocked()
     {
         if (_roslynOverlayRevision == long.MaxValue)
         {
@@ -791,11 +876,17 @@ internal sealed class DocumentSynchronizationHost : IDisposable
             throw new InvalidOperationException("Roslyn overlay revision overflowed; semantic correlation can no longer be represented safely.");
         }
 
+        CancellationTokenSource supersededSource = _roslynOverlayRevisionLifetimeSource
+            ?? throw new InvalidOperationException("Roslyn overlay revision lifetime is unavailable while document synchronization is active.");
+
         _roslynOverlayRevision = checked(_roslynOverlayRevision + 1);
+        _roslynOverlayRevisionLifetimeSource = new CancellationTokenSource();
+        return supersededSource;
     }
 
     public void BeginShutdown()
     {
+        CancellationTokenSource? overlayLifetimeSource;
         lock (_sync)
         {
             if (_disposed || _shuttingDown)
@@ -804,13 +895,17 @@ internal sealed class DocumentSynchronizationHost : IDisposable
             }
 
             _shuttingDown = true;
+            overlayLifetimeSource = _roslynOverlayRevisionLifetimeSource;
+            _roslynOverlayRevisionLifetimeSource = null;
         }
 
+        CancelAndDisposeRoslynOverlayRevisionSourceNoThrow(overlayLifetimeSource);
         _diagnosticLogging.WriteEvent("document_sync_shutting_down");
     }
 
     public void Dispose()
     {
+        CancellationTokenSource? overlayLifetimeSource;
         lock (_sync)
         {
             if (_disposed)
@@ -820,13 +915,43 @@ internal sealed class DocumentSynchronizationHost : IDisposable
 
             _disposed = true;
             _shuttingDown = true;
+            overlayLifetimeSource = _roslynOverlayRevisionLifetimeSource;
+            _roslynOverlayRevisionLifetimeSource = null;
             _authority = null;
             _declaredOpenDocuments.Clear();
             _documents.Clear();
             _totalTrackedSnapshotUtf8Bytes = 0;
         }
 
+        CancelAndDisposeRoslynOverlayRevisionSourceNoThrow(overlayLifetimeSource);
         _diagnosticLogging.WriteEvent("document_sync_stopped");
+    }
+
+    private void CancelAndDisposeRoslynOverlayRevisionSourceNoThrow(
+        CancellationTokenSource? source)
+    {
+        if (source is null)
+        {
+            return;
+        }
+
+        try
+        {
+            source.Cancel(throwOnFirstException: false);
+        }
+        catch (Exception exception)
+        {
+            _diagnosticLogging.WriteFault("document_sync_overlay_cancellation_fault", exception);
+        }
+
+        try
+        {
+            source.Dispose();
+        }
+        catch (Exception exception)
+        {
+            _diagnosticLogging.WriteFault("document_sync_overlay_cancellation_dispose_fault", exception);
+        }
     }
 
     private bool IsRoslynUsableForPublication(WorkspacePublication publication)
@@ -1061,8 +1186,10 @@ internal sealed class DocumentSynchronizationHost : IDisposable
     private void WriteDocumentClosed(
         DocumentEpochRequest request,
         WorkspacePublication publication,
+        long workloadOperationId,
         string documentPath,
-        bool roslynNotificationWasRequired)
+        bool roslynNotificationWasRequired,
+        RoslynDocumentSendTiming roslynTiming)
     {
         if (_diagnosticLogging.IsEnabled)
         {
@@ -1075,6 +1202,11 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                 workspacePublicationVersion = publication.Identity.PublicationVersion,
                 roslynGeneration = publication.RoslynSnapshot.RoslynGeneration,
                 roslynNotificationWasRequired,
+                workloadOperationId,
+                roslynSenderCaptureDurationMs = roslynTiming.SenderCaptureDurationMs,
+                roslynNotificationAwaitDurationMs = roslynTiming.NotificationAwaitDurationMs,
+                roslynPostSendGenerationValidationDurationMs = roslynTiming.PostSendGenerationValidationDurationMs,
+                roslynDocumentSendTotalDurationMs = roslynTiming.TotalDurationMs,
             });
         }
         else
@@ -1086,10 +1218,15 @@ internal sealed class DocumentSynchronizationHost : IDisposable
     private void WriteSnapshotAccepted(
         DocumentSnapshotRequest request,
         WorkspacePublication publication,
+        long workloadOperationId,
         DocumentSynchronizationOutcome outcome,
         string documentPath,
         long acceptedClientVersion,
-        int? roslynDocumentVersion)
+        int? roslynDocumentVersion,
+        long roslynOverlayRevision,
+        RoslynNotificationKind roslynNotificationKind,
+        DocumentSnapshotTimingState? timing,
+        RoslynDocumentSendTiming roslynTiming)
     {
         if (_diagnosticLogging.IsEnabled)
         {
@@ -1104,7 +1241,19 @@ internal sealed class DocumentSynchronizationHost : IDisposable
                 workspacePublicationVersion = publication.Identity.PublicationVersion,
                 roslynGeneration = publication.RoslynSnapshot.RoslynGeneration,
                 roslynDocumentVersion,
+                roslynOverlayRevision,
                 outcome = outcome.ToString(),
+                workloadOperationId,
+                roslynNotificationKind = roslynNotificationKind.ToString(),
+                preRoslynValidationDurationMs = timing?.PreRoslynValidationDurationMs,
+                roslynSendObservedDurationMs = timing?.RoslynSendObservedDurationMs,
+                stateCommitDurationMs = timing?.StateCommitDurationMs,
+                overlayCancellationSignalDurationMs = timing?.OverlayCancellationSignalDurationMs,
+                snapshotPipelineDurationMs = timing?.SnapshotPipelineDurationMs,
+                roslynSenderCaptureDurationMs = roslynTiming.SenderCaptureDurationMs,
+                roslynNotificationAwaitDurationMs = roslynTiming.NotificationAwaitDurationMs,
+                roslynPostSendGenerationValidationDurationMs = roslynTiming.PostSendGenerationValidationDurationMs,
+                roslynDocumentSendTotalDurationMs = roslynTiming.TotalDurationMs,
             });
         }
         else
@@ -1213,6 +1362,45 @@ internal sealed class DocumentSynchronizationHost : IDisposable
         => path.Length <= DocumentSynchronizationLimits.MaxDocumentPathLength
             ? path
             : path[..DocumentSynchronizationLimits.MaxDocumentPathLength];
+
+    private enum RoslynNotificationKind
+    {
+        None = 0,
+        DidOpen = 1,
+        DidChange = 2,
+    }
+
+    private sealed class DocumentSnapshotTimingState
+    {
+        private readonly long _started = Stopwatch.GetTimestamp();
+
+        public double? PreRoslynValidationDurationMs { get; private set; }
+
+        public double? RoslynSendObservedDurationMs { get; private set; }
+
+        public double? StateCommitDurationMs { get; private set; }
+
+        public double? OverlayCancellationSignalDurationMs { get; private set; }
+
+        public double? SnapshotPipelineDurationMs { get; private set; }
+
+        public long StartPhase() => Stopwatch.GetTimestamp();
+
+        public void CompletePreRoslynValidation()
+            => PreRoslynValidationDurationMs ??= Stopwatch.GetElapsedTime(_started, Stopwatch.GetTimestamp()).TotalMilliseconds;
+
+        public void CompleteRoslynSend(long started)
+            => RoslynSendObservedDurationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds;
+
+        public void CompleteStateCommit(long started)
+            => StateCommitDurationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds;
+
+        public void CompleteOverlayCancellationSignal(long started)
+            => OverlayCancellationSignalDurationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds;
+
+        public void CompleteSnapshotPipeline()
+            => SnapshotPipelineDurationMs = Stopwatch.GetElapsedTime(_started, Stopwatch.GetTimestamp()).TotalMilliseconds;
+    }
 
     private sealed class TrackedDocumentState
     {

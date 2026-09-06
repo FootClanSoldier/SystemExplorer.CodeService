@@ -7,7 +7,8 @@ internal sealed record DocumentCompletionRequest(
     string DocumentPath,
     long ClientVersion,
     int Line,
-    int Character);
+    int Character,
+    string Prefix);
 
 internal sealed record DocumentCompletionItem(
     string DisplayText,

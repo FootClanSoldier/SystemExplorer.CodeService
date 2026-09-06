@@ -78,7 +78,8 @@ internal sealed class DocumentCompletionHost : IDisposable
             || request.Line < 0
             || request.Line > DocumentCompletionLimits.MaxCompletionLine
             || request.Character < 0
-            || request.Character > DocumentCompletionLimits.MaxCompletionCharacter)
+            || request.Character > DocumentCompletionLimits.MaxCompletionCharacter
+            || !DocumentCompletionLimits.IsCompletionPrefixWithinBounds(request.Prefix))
         {
             return Reject(DocumentCompletionOutcome.InvalidRequest, request, null, null, lease.OperationId, timing);
         }
@@ -241,7 +242,8 @@ internal sealed class DocumentCompletionHost : IDisposable
             roslynResult.Items.Count,
             roslynResult.IsIncomplete,
             lease.OperationId,
-            timing);
+            timing,
+            commitSafeItemCount: roslynResult.Items.Count);
 
         if (roslynResult.Outcome != RoslynCompletionOutcome.Success)
         {
@@ -301,6 +303,11 @@ internal sealed class DocumentCompletionHost : IDisposable
             .ToArray();
         timing?.SetItemProjectionDuration(itemProjectionStarted);
 
+        long candidateSelectionStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
+        CompletionCandidateSelectionResult selection = CompletionCandidateSelector.Select(items, request.Prefix);
+        timing?.SetCandidateSelectionDuration(candidateSelectionStarted);
+        bool isIncomplete = roslynResult.IsIncomplete || selection.WasReduced;
+
         DocumentCompletionResult result = new(
             DocumentCompletionOutcome.Success,
             request.ClientGeneration,
@@ -311,8 +318,8 @@ internal sealed class DocumentCompletionHost : IDisposable
             completedSnapshot.RoslynGeneration,
             completedSnapshot.RoslynLspVersion,
             completedSnapshot.RoslynOverlayRevision,
-            items,
-            roslynResult.IsIncomplete,
+            selection.Items,
+            isIncomplete,
             roslynResult.RawItemCount);
 
         WriteEvent(
@@ -321,10 +328,13 @@ internal sealed class DocumentCompletionHost : IDisposable
             completedSnapshot,
             DocumentCompletionOutcome.Success.ToString(),
             roslynResult.RawItemCount,
-            items.Length,
-            roslynResult.IsIncomplete,
+            selection.Items.Count,
+            isIncomplete,
             lease.OperationId,
-            timing);
+            timing,
+            commitSafeItemCount: selection.Statistics.CommitSafeInputCount,
+            selectionStatistics: selection.Statistics,
+            candidateSelectionWasReduced: selection.WasReduced);
         return result;
     }
 
@@ -548,7 +558,10 @@ internal sealed class DocumentCompletionHost : IDisposable
         bool isIncomplete,
         long? workloadOperationId,
         CompletionTimingState? timing,
-        long? expectedRoslynOverlayRevision = null)
+        long? expectedRoslynOverlayRevision = null,
+        int? commitSafeItemCount = null,
+        CompletionCandidateSelectionStatistics? selectionStatistics = null,
+        bool? candidateSelectionWasReduced = null)
     {
         if (!_diagnosticLogging.IsEnabled)
         {
@@ -581,7 +594,44 @@ internal sealed class DocumentCompletionHost : IDisposable
             workloadOperationId,
             completionOutcome,
             rawItemCount,
+            commitSafeItemCount,
+            prefixMatchItemCount = selectionStatistics?.PrefixMatchCount,
+            textualEligibleItemCount = selectionStatistics?.TextualEligibleCount,
             returnedItemCount,
+            publishedItemCount = selectionStatistics?.PublishedCount,
+            droppedByPrefixCount = selectionStatistics?.DroppedByPrefixCount,
+            droppedByPublicationBudgetCount = selectionStatistics?.DroppedByPublicationBudgetCount,
+            textualFilterApplied = selectionStatistics?.TextualFilterApplied,
+            textualFallbackUsed = selectionStatistics?.TextualFallbackUsed,
+            candidateSelectionWasReduced,
+            prefixUtf16Length = request?.Prefix?.Length,
+            preselectInputCount = selectionStatistics?.InputDistribution.PreselectCount,
+            localInputCount = selectionStatistics?.InputDistribution.LocalCount,
+            currentTypeInputCount = selectionStatistics?.InputDistribution.CurrentTypeCount,
+            baseTypeDepth1InputCount = selectionStatistics?.InputDistribution.BaseTypeDepth1Count,
+            baseTypeDepth2InputCount = selectionStatistics?.InputDistribution.BaseTypeDepth2Count,
+            deepBaseTypeInputCount = selectionStatistics?.InputDistribution.DeepBaseTypeCount,
+            otherUserCodeInputCount = selectionStatistics?.InputDistribution.OtherUserCodeCount,
+            frameworkOrOtherInputCount = selectionStatistics?.InputDistribution.FrameworkOrOtherCount,
+            unknownInputCount = selectionStatistics?.InputDistribution.UnknownCount,
+            preselectEligibleCount = selectionStatistics?.EligibleDistribution.PreselectCount,
+            localEligibleCount = selectionStatistics?.EligibleDistribution.LocalCount,
+            currentTypeEligibleCount = selectionStatistics?.EligibleDistribution.CurrentTypeCount,
+            baseTypeDepth1EligibleCount = selectionStatistics?.EligibleDistribution.BaseTypeDepth1Count,
+            baseTypeDepth2EligibleCount = selectionStatistics?.EligibleDistribution.BaseTypeDepth2Count,
+            deepBaseTypeEligibleCount = selectionStatistics?.EligibleDistribution.DeepBaseTypeCount,
+            otherUserCodeEligibleCount = selectionStatistics?.EligibleDistribution.OtherUserCodeCount,
+            frameworkOrOtherEligibleCount = selectionStatistics?.EligibleDistribution.FrameworkOrOtherCount,
+            unknownEligibleCount = selectionStatistics?.EligibleDistribution.UnknownCount,
+            preselectPublishedCount = selectionStatistics?.PublishedDistribution.PreselectCount,
+            localPublishedCount = selectionStatistics?.PublishedDistribution.LocalCount,
+            currentTypePublishedCount = selectionStatistics?.PublishedDistribution.CurrentTypeCount,
+            baseTypeDepth1PublishedCount = selectionStatistics?.PublishedDistribution.BaseTypeDepth1Count,
+            baseTypeDepth2PublishedCount = selectionStatistics?.PublishedDistribution.BaseTypeDepth2Count,
+            deepBaseTypePublishedCount = selectionStatistics?.PublishedDistribution.DeepBaseTypeCount,
+            otherUserCodePublishedCount = selectionStatistics?.PublishedDistribution.OtherUserCodeCount,
+            frameworkOrOtherPublishedCount = selectionStatistics?.PublishedDistribution.FrameworkOrOtherCount,
+            unknownPublishedCount = selectionStatistics?.PublishedDistribution.UnknownCount,
             isIncomplete,
             durationMs,
             admissionValidationDurationMs = timing?.AdmissionValidationDurationMs,
@@ -589,6 +639,7 @@ internal sealed class DocumentCompletionHost : IDisposable
             roslynCompletionObservedDurationMs = timing?.RoslynCompletionObservedDurationMs,
             postCompletionRevalidationDurationMs = timing?.PostCompletionRevalidationDurationMs,
             itemProjectionDurationMs = timing?.ItemProjectionDurationMs,
+            candidateSelectionDurationMs = timing?.CandidateSelectionDurationMs,
             explicitWorkDurationMs,
             unattributedHostDurationMs,
             roslynCompletionSenderCaptureDurationMs = timing?.RoslynTiming.SenderCaptureDurationMs,
@@ -615,6 +666,7 @@ internal sealed class DocumentCompletionHost : IDisposable
         public double? RoslynCompletionObservedDurationMs { get; private set; }
         public double? PostCompletionRevalidationDurationMs { get; private set; }
         public double? ItemProjectionDurationMs { get; private set; }
+        public double? CandidateSelectionDurationMs { get; private set; }
         public RoslynCompletionTiming RoslynTiming { get; private set; }
 
         public void StartAdmissionValidation()
@@ -641,6 +693,9 @@ internal sealed class DocumentCompletionHost : IDisposable
         public void SetItemProjectionDuration(long started)
             => ItemProjectionDurationMs = Elapsed(started);
 
+        public void SetCandidateSelectionDuration(long started)
+            => CandidateSelectionDurationMs = Elapsed(started);
+
         public double GetTotalDurationMs()
             => Elapsed(_totalStarted);
 
@@ -649,7 +704,8 @@ internal sealed class DocumentCompletionHost : IDisposable
                 + (PreCompletionRevalidationDurationMs ?? 0)
                 + (RoslynCompletionObservedDurationMs ?? 0)
                 + (PostCompletionRevalidationDurationMs ?? 0)
-                + (ItemProjectionDurationMs ?? 0);
+                + (ItemProjectionDurationMs ?? 0)
+                + (CandidateSelectionDurationMs ?? 0);
 
         private static double Elapsed(long started)
             => Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds;

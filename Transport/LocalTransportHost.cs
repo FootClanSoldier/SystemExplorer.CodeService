@@ -1062,6 +1062,7 @@ internal sealed class LocalTransportHost : IAsyncDisposable
             int clientVersionCount = 0;
             int lineCount = 0;
             int characterCount = 0;
+            int prefixCount = 0;
             int schemaVersion = 0;
             long clientGeneration = 0;
             Guid epochId = default;
@@ -1069,6 +1070,7 @@ internal sealed class LocalTransportHost : IAsyncDisposable
             long clientVersion = 0;
             int line = 0;
             int character = 0;
+            string? prefix = null;
 
             foreach (JsonProperty property in root.EnumerateObject())
             {
@@ -1156,6 +1158,21 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                         }
                         break;
 
+                    case "prefix":
+                        prefixCount++;
+                        if (prefixCount != 1
+                            || property.Value.ValueKind != JsonValueKind.String)
+                        {
+                            return CompletionBodyParseResult.Invalid();
+                        }
+
+                        prefix = property.Value.GetString();
+                        if (!DocumentCompletionLimits.IsCompletionPrefixWithinBounds(prefix))
+                        {
+                            return CompletionBodyParseResult.Invalid();
+                        }
+                        break;
+
                     default:
                         return CompletionBodyParseResult.Invalid();
                 }
@@ -1173,6 +1190,25 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                 return CompletionBodyParseResult.Invalid();
             }
 
+            if (schemaVersion != CodeServiceProtocol.CompletionSchemaVersion)
+            {
+                DocumentCompletionRequest mismatchedRequest = new(
+                    schemaVersion,
+                    clientGeneration,
+                    epochId,
+                    documentPath,
+                    clientVersion,
+                    line,
+                    character,
+                    prefix ?? string.Empty);
+                return CompletionBodyParseResult.VersionMismatch(mismatchedRequest);
+            }
+
+            if (prefixCount != 1 || prefix is null)
+            {
+                return CompletionBodyParseResult.Invalid();
+            }
+
             DocumentCompletionRequest requestValue = new(
                 schemaVersion,
                 clientGeneration,
@@ -1180,11 +1216,10 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                 documentPath,
                 clientVersion,
                 line,
-                character);
+                character,
+                prefix);
 
-            return schemaVersion == CodeServiceProtocol.CompletionSchemaVersion
-                ? CompletionBodyParseResult.Success(requestValue)
-                : CompletionBodyParseResult.VersionMismatch(requestValue);
+            return CompletionBodyParseResult.Success(requestValue);
         }
         catch (JsonException)
         {

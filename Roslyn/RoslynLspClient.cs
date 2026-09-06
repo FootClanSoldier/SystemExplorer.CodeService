@@ -378,14 +378,14 @@ internal sealed class RoslynLspClient : IAsyncDisposable
         }
 
         int rawItemCount = items.GetArrayLength();
-        bool isIncomplete = serverIsIncomplete || rawItemCount > DocumentCompletionLimits.MaxCompletionItems;
+        bool isIncomplete = serverIsIncomplete || rawItemCount > DocumentCompletionLimits.MaxInspectedRoslynCompletionItems;
         int normalizedTextUtf8Bytes = 0;
-        List<RoslynCompletionItem> normalized = new(Math.Min(rawItemCount, DocumentCompletionLimits.MaxCompletionItems));
+        List<RoslynCompletionItem> normalized = new(Math.Min(rawItemCount, DocumentCompletionLimits.MaxInspectedRoslynCompletionItems));
         int inspectedCount = 0;
 
         foreach (JsonElement item in items.EnumerateArray())
         {
-            if (inspectedCount >= DocumentCompletionLimits.MaxCompletionItems)
+            if (inspectedCount >= DocumentCompletionLimits.MaxInspectedRoslynCompletionItems)
             {
                 isIncomplete = true;
                 break;

@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace SystemExplorer.CodeService;
 
-internal sealed record DocumentCompletionResponse(
+internal sealed record DocumentCompletionResolveResponse(
     [property: JsonPropertyName("schemaVersion")] int SchemaVersion,
     [property: JsonPropertyName("outcome")] string Outcome,
     [property: JsonPropertyName("requestId")] string? RequestId,
@@ -15,17 +15,16 @@ internal sealed record DocumentCompletionResponse(
     [property: JsonPropertyName("roslynGeneration")] long? RoslynGeneration,
     [property: JsonPropertyName("roslynDocumentVersion")] int? RoslynDocumentVersion,
     [property: JsonPropertyName("roslynOverlayRevision")] long? RoslynOverlayRevision,
-    [property: JsonPropertyName("isIncomplete")] bool IsIncomplete,
-    [property: JsonPropertyName("items")] IReadOnlyList<DocumentCompletionResponseItem> Items);
+    [property: JsonPropertyName("edits")] IReadOnlyList<DocumentCompletionResolveResponseEdit> Edits);
 
-internal sealed record DocumentCompletionResponseItem(
-    [property: JsonPropertyName("kind")] int? Kind,
-    [property: JsonPropertyName("displayText")] string DisplayText,
-    [property: JsonPropertyName("insertText")] string? InsertText,
-    [property: JsonPropertyName("filterText")] string FilterText,
-    [property: JsonPropertyName("sortText")] string SortText,
-    [property: JsonPropertyName("preselect")] bool Preselect,
-    [property: JsonPropertyName("semanticOrigin")] string SemanticOrigin,
-    [property: JsonPropertyName("inheritanceDepth")] int? InheritanceDepth,
-    [property: JsonPropertyName("requiresImport")] bool RequiresImport,
-    [property: JsonPropertyName("completionHandle")] string? CompletionHandle);
+internal sealed record DocumentCompletionResolveResponseEdit(
+    [property: JsonPropertyName("range")] DocumentCompletionResolveResponseRange Range,
+    [property: JsonPropertyName("newText")] string NewText);
+
+internal sealed record DocumentCompletionResolveResponseRange(
+    [property: JsonPropertyName("start")] DocumentCompletionResolveResponsePosition Start,
+    [property: JsonPropertyName("end")] DocumentCompletionResolveResponsePosition End);
+
+internal sealed record DocumentCompletionResolveResponsePosition(
+    [property: JsonPropertyName("line")] int Line,
+    [property: JsonPropertyName("character")] int Character);

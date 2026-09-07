@@ -165,6 +165,8 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                         completionSemanticOriginPatchSha256 = validatedRoslynRuntime.VerifiedCompletionSemanticOriginPatchSha256,
                         currentSourceFrozenPartialPatchSha256 = validatedRoslynRuntime.VerifiedCurrentSourceFrozenPartialPatchSha256,
                         completionIncrementalReusePatchSha256 = validatedRoslynRuntime.VerifiedCompletionIncrementalReusePatchSha256,
+                        importCompletionContractPatchSha256 = validatedRoslynRuntime.VerifiedImportCompletionContractPatchSha256,
+                        importCompletionReadinessPatchSha256 = validatedRoslynRuntime.VerifiedImportCompletionReadinessPatchSha256,
                         provenance = "systemexplorer-private-patched-build",
                     });
             }
@@ -427,6 +429,7 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                 workloadCoordinator,
                 workspaceHost,
                 documentSynchronizationHost,
+                documentSemanticReadinessHost,
                 roslynLanguageServerHost,
                 diagnosticLogging);
             diagnosticLogging.WriteEvent("completion_host_started");

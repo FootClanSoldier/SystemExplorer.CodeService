@@ -16,20 +16,22 @@ internal sealed class RoslynLanguageServerRuntime
     public const string CompletionSemanticOriginPatchSha256 = "6818CC1B3A10C97B31782CCE20B7590A4A7F1B39710D7B48DD5B234E1B3BC1FB";
     public const string CurrentSourceFrozenPartialPatchSha256 = "17827506D20D05B63764C3959A698E35584776FC5C3FB559E70B9B9FFCBDB4E6";
     public const string CompletionIncrementalReusePatchSha256 = "39D4217634DCF32304E071B1D8E01FA42778461CA903B07544490E451807F6EC";
+    public const string ImportCompletionContractPatchSha256 = "608B4EFA8B50E85EFBD9A7D6CF2BF0C31200809EE7D42E2C9B243A40858770B0";
+    public const string ImportCompletionReadinessPatchSha256 = "8DD66DA05D857ECB0737973C343F04A9D20BB7B4C35DA5A010E9CA4109405524";
 
-    // Materialized production identity from the canonical private Roslyn v4 build.
+    // Materialized production identity from the canonical private Roslyn v6 build.
     // Runtime and pack validation both fail closed if these exact binaries are not present.
-    public const string DistributionId = "roslyn-3aeb96c9-systemexplorer-39d4217634dc-win-x64-v4";
-    public const string LanguageServerDllSha256 = "B51A8B22928662ED85B8CB4F4FDC252060498BC4B88AA005CE77EBA98CA3F409";
-    public const string FeaturesDllSha256 = "AB13A3A17361A76BC37144B02ABDD53E3CAD31905DA6DB70B67F0B1B37177235";
-    public const string LanguageServerProtocolDllSha256 = "CE445673436692442A09F84211579FA8B559F0E1728284A64E8A588F6F219FA6";
+    public const string DistributionId = "roslyn-3aeb96c9-systemexplorer-8dd66da05d85-win-x64-v6";
+    public const string LanguageServerDllSha256 = "D085B09DA0A2D0B636C898B745D185C0739443CDCAF35F7A329649880772C243";
+    public const string FeaturesDllSha256 = "2E7E23515CC2C42DBDA8722BA1F00A9DDBF69619298AFC5CA93C3B4647935D85";
+    public const string LanguageServerProtocolDllSha256 = "89534EF1B6F5E1D439D4356772D93638B396E1EDF3BA36AA19934A705C72891C";
 
     private const string ServerDllFileName = "Microsoft.CodeAnalysis.LanguageServer.dll";
     private const string FeaturesDllFileName = "Microsoft.CodeAnalysis.Features.dll";
     private const string LanguageServerProtocolDllFileName = "Microsoft.CodeAnalysis.LanguageServer.Protocol.dll";
     private const string DepsFileName = "Microsoft.CodeAnalysis.LanguageServer.deps.json";
     private const string RuntimeConfigFileName = "Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json";
-    private const string PendingRuntimeHashSentinel = "V4_BUILD_REQUIRED";
+    private const string PendingRuntimeHashSentinel = "V6_BUILD_REQUIRED";
     private const string PendingDistributionIdMarker = "SOURCE-BUILD-REQUIRED";
 
     private RoslynLanguageServerRuntime(
@@ -84,6 +86,10 @@ internal sealed class RoslynLanguageServerRuntime
 
     public string VerifiedCompletionIncrementalReusePatchSha256 => CompletionIncrementalReusePatchSha256;
 
+    public string VerifiedImportCompletionContractPatchSha256 => ImportCompletionContractPatchSha256;
+
+    public string VerifiedImportCompletionReadinessPatchSha256 => ImportCompletionReadinessPatchSha256;
+
     public static RoslynLanguageServerRuntimeValidationResult TryValidate(
         string? runtimeDirectory,
         RoslynLanguageServerRuntimeSource runtimeSource = RoslynLanguageServerRuntimeSource.ExplicitOverride)
@@ -94,7 +100,7 @@ internal sealed class RoslynLanguageServerRuntime
             || DistributionId.Contains(PendingDistributionIdMarker, StringComparison.Ordinal))
         {
             return RoslynLanguageServerRuntimeValidationResult.Failure(
-                "Roslyn v4 source adoption is present, but build-derived runtime identity values have not been materialized yet.");
+                "Roslyn v6 source adoption is present, but build-derived runtime identity values have not been materialized yet.");
         }
 
         if (string.IsNullOrWhiteSpace(runtimeDirectory))

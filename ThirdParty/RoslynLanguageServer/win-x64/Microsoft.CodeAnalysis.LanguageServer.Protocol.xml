@@ -8169,6 +8169,11 @@
             Gets or sets a value indicating whether client supports Visual Studio extensions.
             </summary>
         </member>
+        <member name="P:Roslyn.LanguageServer.Protocol.VSInternalClientCapabilities.SystemExplorerSupportsImportCompletion">
+            <summary>
+            Gets or sets a value indicating whether SystemExplorer opts in to import completion while retaining Visual Studio extensions.
+            </summary>
+        </member>
         <member name="P:Roslyn.LanguageServer.Protocol.VSInternalClientCapabilities.SupportedSnippetVersion">
             <summary>
             Gets or sets a value indicating what level of snippet support is available from Visual Studio Client.

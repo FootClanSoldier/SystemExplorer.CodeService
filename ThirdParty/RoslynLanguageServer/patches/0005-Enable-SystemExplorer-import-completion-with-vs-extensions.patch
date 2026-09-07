@@ -1,0 +1,314 @@
+diff --git a/src/LanguageServer/Protocol/Protocol/Internal/VSInternalClientCapabilities.cs b/src/LanguageServer/Protocol/Protocol/Internal/VSInternalClientCapabilities.cs
+--- a/src/LanguageServer/Protocol/Protocol/Internal/VSInternalClientCapabilities.cs
++++ b/src/LanguageServer/Protocol/Protocol/Internal/VSInternalClientCapabilities.cs
+@@ -24,6 +24,13 @@ internal sealed class VSInternalClientCapabilities : ClientCapabilities
+         set;
+     }
+ 
++    /// <summary>
++    /// Gets or sets a value indicating whether SystemExplorer opts in to import completion while retaining Visual Studio extensions.
++    /// </summary>
++    [JsonPropertyName("_systemExplorer_supportsImportCompletion")]
++    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
++    public bool SystemExplorerSupportsImportCompletion { get; set; }
++
+     /// <summary>
+     /// Gets or sets a value indicating what level of snippet support is available from Visual Studio Client.
+     /// v1.0 refers to only default tab stop support i.e. support for $0 which manipualtes the cursor position.
+diff --git a/src/LanguageServer/Protocol/Handler/Completion/CompletionCapabilityHelper.cs b/src/LanguageServer/Protocol/Handler/Completion/CompletionCapabilityHelper.cs
+--- a/src/LanguageServer/Protocol/Handler/Completion/CompletionCapabilityHelper.cs
++++ b/src/LanguageServer/Protocol/Handler/Completion/CompletionCapabilityHelper.cs
+@@ -20,6 +20,7 @@ internal sealed class CompletionCapabilityHelper
+     public const string EditRangePropertyName = "editRange";
+ 
+     public bool SupportVSInternalClientCapabilities { get; }
++    public bool SupportSystemExplorerImportCompletion { get; }
+     public bool SupportDefaultEditRange { get; }
+     public bool SupportCompletionListData { get; }
+     public bool SupportVSInternalCompletionListData { get; }
+@@ -35,6 +36,8 @@ internal sealed class CompletionCapabilityHelper
+         : this(supportsVSExtensions: clientCapabilities.HasVisualStudioLspCapability(),
+                completionSetting: clientCapabilities.TextDocument?.Completion)
+     {
++        SupportSystemExplorerImportCompletion = SupportVSInternalClientCapabilities
++            && clientCapabilities is VSInternalClientCapabilities { SystemExplorerSupportsImportCompletion: true };
+     }
+ 
+     public CompletionCapabilityHelper(bool supportsVSExtensions, CompletionSetting? completionSetting)
+diff --git a/src/LanguageServer/Protocol/Handler/Completion/Extensions.cs b/src/LanguageServer/Protocol/Handler/Completion/Extensions.cs
+--- a/src/LanguageServer/Protocol/Handler/Completion/Extensions.cs
++++ b/src/LanguageServer/Protocol/Handler/Completion/Extensions.cs
+@@ -18,17 +18,12 @@ internal static class Extensions
+ 
+         if (capabilityHelper.SupportVSInternalClientCapabilities)
+         {
+-            // Filter out unimported types for now as there are two issues with providing them:
+-            // 1.  LSP client does not currently provide a way to provide detail text on the completion item to show the namespace.
+-            //     https://dev.azure.com/devdiv/DevDiv/_workitems/edit/1076759
+-            // 2.  We need to figure out how to provide the text edits along with the completion item or provide them in the resolve request.
+-            //     https://devdiv.visualstudio.com/DevDiv/_workitems/edit/985860/
+-            // 3.  LSP client should support completion filters / expanders
++            var supportSystemExplorerImportCompletion = capabilityHelper.SupportSystemExplorerImportCompletion;
+             options = options with
+             {
+-                ShowItemsFromUnimportedNamespaces = false,
+-                ExpandedCompletionBehavior = ExpandedCompletionMode.NonExpandedItemsOnly,
+-                UpdateImportCompletionCacheInBackground = false,
++                ShowItemsFromUnimportedNamespaces = supportSystemExplorerImportCompletion,
++                ExpandedCompletionBehavior = supportSystemExplorerImportCompletion ? ExpandedCompletionMode.AllItems : ExpandedCompletionMode.NonExpandedItemsOnly,
++                UpdateImportCompletionCacheInBackground = supportSystemExplorerImportCompletion,
+             };
+         }
+         else
+diff --git a/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs b/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs
+--- a/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs
++++ b/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs
+@@ -19,6 +19,7 @@ internal sealed class VSInternalCompletionItem : CompletionItem
+     internal const string MatchPrioritySerializedName = "_vs_matchPriority";
+     internal const string SystemExplorerCompletionSemanticOriginSerializedName = "_systemExplorer_completionSemanticOrigin";
+     internal const string SystemExplorerCompletionInheritanceDepthSerializedName = "_systemExplorer_completionInheritanceDepth";
++    internal const string SystemExplorerCompletionRequiresImportSerializedName = "_systemExplorer_completionRequiresImport";
+ 
+     /// <summary>
+     /// Gets or sets the icon to show for the completion item. In VS, this is more extensive than the completion kind.
+@@ -71,4 +72,8 @@ internal sealed class VSInternalCompletionItem : CompletionItem
+     [JsonPropertyName(SystemExplorerCompletionInheritanceDepthSerializedName)]
+     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+     public int? SystemExplorerCompletionInheritanceDepth { get; set; }
++
++    [JsonPropertyName(SystemExplorerCompletionRequiresImportSerializedName)]
++    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
++    public bool SystemExplorerCompletionRequiresImport { get; set; }
+ }
+diff --git a/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs b/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs
+--- a/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs
++++ b/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs
+@@ -138,6 +138,11 @@ internal sealed class OptimizedVSCompletionListJsonConverter : JsonConverter<Opt
+                 writer.WriteBoolean(VSInternalCompletionItem.VsResolveTextEditOnCommitName, vsCompletionItem.VsResolveTextEditOnCommit);
+             }
+ 
++            if (vsCompletionItem.SystemExplorerCompletionRequiresImport)
++            {
++                writer.WriteBoolean(VSInternalCompletionItem.SystemExplorerCompletionRequiresImportSerializedName, true);
++            }
++
+             if (vsCompletionItem.MatchPriority != 0)
+             {
+                 writer.WriteNumber(VSInternalCompletionItem.MatchPrioritySerializedName, vsCompletionItem.MatchPriority);
+diff --git a/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs b/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs
+--- a/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs
++++ b/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs
+@@ -123,6 +123,9 @@ internal static class CompletionResultFactory
+ 
+             if (lspItem is LSP.VSInternalCompletionItem systemExplorerVsItem)
+             {
++                if (item.IsComplexTextEdit && item.Flags.IsExpanded())
++                    systemExplorerVsItem.SystemExplorerCompletionRequiresImport = true;
++
+                 if (item.Properties.TryGetValue("SystemExplorer.CompletionSemanticOrigin", out var systemExplorerOrigin))
+                     systemExplorerVsItem.SystemExplorerCompletionSemanticOrigin = systemExplorerOrigin;
+ 
+diff --git a/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
+--- a/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
++++ b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
+@@ -15,7 +15,7 @@ internal static class SystemExplorerCompletionSemanticOrigin
+         SyntaxContext context)
+     {
+         if (symbols.IsDefaultOrEmpty)
+-            return item.AddProperty(OriginPropertyKey, "Unknown");
++            return AttachEvidence(item, new("Unknown", null));
+ 
+         OriginEvidence? aggregate = null;
+         foreach (ISymbol symbol in symbols)
+@@ -29,15 +29,24 @@ internal static class SystemExplorerCompletionSemanticOrigin
+             }
+ 
+             if (aggregate.Value.Kind != current.Kind || aggregate.Value.InheritanceDepth != current.InheritanceDepth)
+-                return item.AddProperty(OriginPropertyKey, "Unknown");
++                return AttachEvidence(item, new("Unknown", null));
+         }
+ 
+-        OriginEvidence evidence = aggregate ?? new("Unknown", null);
++        return AttachEvidence(item, aggregate ?? new("Unknown", null));
++    }
++
++    public static CompletionItem AttachDeclarationAuthority(
++        CompletionItem item,
++        ISymbol declaration)
++        => AttachEvidence(item, ClassifyDeclarationAuthority(declaration));
++
++    private static CompletionItem AttachEvidence(CompletionItem item, OriginEvidence evidence)
++    {
+         item = item.AddProperty(OriginPropertyKey, evidence.Kind);
+         return evidence.InheritanceDepth is int depth
+             ? item.AddProperty(InheritanceDepthPropertyKey, depth.ToString(System.Globalization.CultureInfo.InvariantCulture))
+             : item;
+     }
+ 
+     private static OriginEvidence Classify(ISymbol symbol, SyntaxContext context)
+     {
+diff --git a/src/Features/Core/Portable/Completion/Providers/ImportCompletionProvider/TypeImportCompletionCacheEntry.cs b/src/Features/Core/Portable/Completion/Providers/ImportCompletionProvider/TypeImportCompletionCacheEntry.cs
+--- a/src/Features/Core/Portable/Completion/Providers/ImportCompletionProvider/TypeImportCompletionCacheEntry.cs
++++ b/src/Features/Core/Portable/Completion/Providers/ImportCompletionProvider/TypeImportCompletionCacheEntry.cs
+@@ -205,6 +205,8 @@ internal sealed class TypeImportCompletionCacheEntry
+                 extensionMethodData: null,
+                 commitBehavior: _commitBehavior);
+ 
++            item = SystemExplorerCompletionSemanticOrigin.AttachDeclarationAuthority(item, symbol);
++
+             if (isPublic)
+                 _publicItemCount++;
+ 
+diff --git a/src/LanguageServer/ProtocolUnitTests/Completion/CompletionTests.cs b/src/LanguageServer/ProtocolUnitTests/Completion/CompletionTests.cs
+--- a/src/LanguageServer/ProtocolUnitTests/Completion/CompletionTests.cs
++++ b/src/LanguageServer/ProtocolUnitTests/Completion/CompletionTests.cs
+@@ -8,5 +8,6 @@ using System;
+ using System.Collections.Immutable;
+ using System.Linq;
++using System.Text.Json;
+ using System.Threading;
+ using System.Threading.Tasks;
+ using Microsoft.CodeAnalysis.Completion;
+@@ -276,22 +277,27 @@ public sealed class CompletionTests : AbstractLanguageServerProtocolTests
+     }
+ 
+     [Theory, CombinatorialData]
+-    public async Task TestGetCompletionsDoesNotIncludeUnimportedTypesAsync(bool mutatingLspWorkspace)
++    public async Task TestSystemExplorerImportCompletionDisabledByDefaultForVsExtensions(bool mutatingLspWorkspace)
+     {
+         var markup =
+             """
+-            class A
++            namespace Hidden.Project
+             {
+-                void M()
++                public class HiddenController
+                 {
+-                    {|caret:|}
+                 }
+             }
++
++            namespace Consumer
++            {
++                class C
++                {
++                    Hidd{|caret:|}
++                }
++            }
+             """;
+         await using var testLspServer = await CreateTestLspServerAsync(markup, mutatingLspWorkspace, s_vsCompletionCapabilities);
+-        var solution = testLspServer.TestWorkspace.CurrentSolution;
+ 
+-        // Make sure the unimported types option is on
+         testLspServer.TestWorkspace.GlobalOptions.SetGlobalOption(CompletionOptionsStorage.ShowItemsFromUnimportedNamespaces, LanguageNames.CSharp, true);
+         testLspServer.TestWorkspace.GlobalOptions.SetGlobalOption(CompletionOptionsStorage.ForceExpandedCompletionIndexCreation, true);
+ 
+@@ -312,7 +318,89 @@ public sealed class CompletionTests : AbstractLanguageServerProtocolTests
+             triggerKind: LSP.CompletionTriggerKind.Invoked);
+ 
+         var results = await RunGetCompletionsAsync(testLspServer, completionParams);
+-        Assert.False(results.Items.Any(item => "Console" == item.Label));
++        Assert.DoesNotContain(results.Items, item => item.Label == "HiddenController");
++    }
++
++    [Theory, CombinatorialData]
++    public async Task TestSystemExplorerImportCompletionWithVsExtensionsSourceType(bool mutatingLspWorkspace)
++    {
++        var markup =
++            """
++            namespace Hidden.Project
++            {
++                public class HiddenController
++                {
++                }
++            }
++
++            namespace Consumer
++            {
++                class C
++                {
++                    Hidd{|caret:|}
++                }
++            }
++            """;
++        var capabilities = CreateCoreCompletionCapabilities();
++        capabilities.SystemExplorerSupportsImportCompletion = true;
++
++        await using var testLspServer = await CreateTestLspServerAsync(markup, mutatingLspWorkspace, capabilities);
++        testLspServer.TestWorkspace.GlobalOptions.SetGlobalOption(CompletionOptionsStorage.ShowItemsFromUnimportedNamespaces, LanguageNames.CSharp, true);
++        testLspServer.TestWorkspace.GlobalOptions.SetGlobalOption(CompletionOptionsStorage.ForceExpandedCompletionIndexCreation, true);
++
++        var completionParams = CreateCompletionParams(
++            testLspServer.GetLocations("caret").Single(),
++            invokeKind: LSP.VSInternalCompletionInvokeKind.Explicit,
++            triggerCharacter: "\0",
++            triggerKind: LSP.CompletionTriggerKind.Invoked);
++
++        var results = await RunGetCompletionsAsync(testLspServer, completionParams);
++        var item = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.Single(item => item.Label == "HiddenController"));
++        Assert.Equal(LSP.CompletionItemKind.Class, item.Kind);
++        Assert.True(item.VsResolveTextEditOnCommit);
++        Assert.True(item.SystemExplorerCompletionRequiresImport);
++        Assert.Equal("OtherUserCode", item.SystemExplorerCompletionSemanticOrigin);
++        Assert.Null(item.SystemExplorerCompletionInheritanceDepth);
++
++        var serialized = JsonSerializer.Serialize(
++            new LSP.OptimizedVSCompletionList((LSP.VSInternalCompletionList)results),
++            ProtocolConversions.LspJsonSerializerOptions);
++        Assert.Contains("\"_systemExplorer_completionRequiresImport\":true", serialized);
++    }
++
++    [Theory, CombinatorialData]
++    public async Task TestSystemExplorerImportCompletionWithVsExtensionsMetadataType(bool mutatingLspWorkspace)
++    {
++        var markup =
++            """
++            namespace Consumer
++            {
++                class C
++                {
++                    StringBui{|caret:|}
++                }
++            }
++            """;
++        var capabilities = CreateCoreCompletionCapabilities();
++        capabilities.SystemExplorerSupportsImportCompletion = true;
++
++        await using var testLspServer = await CreateTestLspServerAsync(markup, mutatingLspWorkspace, capabilities);
++        testLspServer.TestWorkspace.GlobalOptions.SetGlobalOption(CompletionOptionsStorage.ShowItemsFromUnimportedNamespaces, LanguageNames.CSharp, true);
++        testLspServer.TestWorkspace.GlobalOptions.SetGlobalOption(CompletionOptionsStorage.ForceExpandedCompletionIndexCreation, true);
++
++        var completionParams = CreateCompletionParams(
++            testLspServer.GetLocations("caret").Single(),
++            invokeKind: LSP.VSInternalCompletionInvokeKind.Explicit,
++            triggerCharacter: "\0",
++            triggerKind: LSP.CompletionTriggerKind.Invoked);
++
++        var results = await RunGetCompletionsAsync(testLspServer, completionParams);
++        var item = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.Single(item => item.Label == "StringBuilder"));
++        Assert.Equal(LSP.CompletionItemKind.Class, item.Kind);
++        Assert.True(item.VsResolveTextEditOnCommit);
++        Assert.True(item.SystemExplorerCompletionRequiresImport);
++        Assert.Equal("FrameworkOrOther", item.SystemExplorerCompletionSemanticOrigin);
++        Assert.Null(item.SystemExplorerCompletionInheritanceDepth);
+     }
+ 
+     [Theory, CombinatorialData]
+@@ -817,9 +905,16 @@ public sealed class CompletionTests : AbstractLanguageServerProtocolTests
+ 
+         var results = await RunGetCompletionsAsync(testLspServer, completionParams).ConfigureAwait(false);
+         Assert.Null(results.Items.First().TextEdit);
+         Assert.Null(results.Items.First().InsertText);
+-        Assert.True(((LSP.VSInternalCompletionItem)results.Items.First()).VsResolveTextEditOnCommit);
++        var item = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.First());
++        Assert.True(item.VsResolveTextEditOnCommit);
++        Assert.False(item.SystemExplorerCompletionRequiresImport);
++
++        var serialized = JsonSerializer.Serialize(
++            new LSP.OptimizedVSCompletionList((LSP.VSInternalCompletionList)results),
++            ProtocolConversions.LspJsonSerializerOptions);
++        Assert.DoesNotContain("\"_systemExplorer_completionRequiresImport\"", serialized);
+     }
+ 
+     [Theory, CombinatorialData]
+     public async Task TestDoNotProvidePartialMethodTextEditsOrInsertTextAsync(bool mutatingLspWorkspace)

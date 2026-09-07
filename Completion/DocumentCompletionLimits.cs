@@ -6,6 +6,12 @@ internal static class DocumentCompletionLimits
 {
     public const int MaxRequestBodySizeBytes = 16 * 1024;
     public const int MaxResponseBodySizeBytes = 4 * 1024 * 1024;
+    public const int MaxCompletionResolveRequestBodySizeBytes = 16 * 1024;
+    public const int MaxRoslynCompletionResolvePayloadUtf8Bytes = 16 * 1024;
+    public const int MaxRoslynCompletionResolvePayloadAggregateUtf8Bytes = 1 * 1024 * 1024;
+    public const int MaxCompletionResolveEditNewTextUtf8Bytes = 4 * 1024 * 1024;
+    public const int MaxCompletionResolveResponseBodySizeBytes = 24 * 1024 * 1024;
+    public const int MaxRetainedCompletionResolveBatches = 3;
     public const int MaxInspectedRoslynCompletionItems = 1024;
     public const int MaxPublishedCompletionItems = 256;
     public const int MaxCompletionPrefixUtf8Bytes = 2048;

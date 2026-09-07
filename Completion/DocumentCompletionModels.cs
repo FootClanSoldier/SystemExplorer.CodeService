@@ -12,13 +12,21 @@ internal sealed record DocumentCompletionRequest(
 
 internal sealed record DocumentCompletionItem(
     string DisplayText,
-    string InsertText,
+    string? InsertText,
     int? Kind,
     string FilterText,
     string SortText,
     bool Preselect,
     CompletionSemanticOrigin SemanticOrigin,
-    int? InheritanceDepth);
+    int? InheritanceDepth,
+    bool RequiresImport,
+    Guid? CompletionHandle)
+{
+    public bool HasValidCommitContract
+        => RequiresImport
+            ? InsertText is null && CompletionHandle is not null && CompletionHandle != Guid.Empty
+            : !string.IsNullOrEmpty(InsertText) && CompletionHandle is null;
+}
 
 internal enum DocumentCompletionOutcome
 {

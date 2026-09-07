@@ -4,7 +4,6 @@ namespace SystemExplorer.CodeService;
 
 internal sealed class DocumentSemanticReadinessHost : IDisposable
 {
-    private const bool FirstDocumentSemanticWarmupExperimentEnabled = true;
     private const int MaxProofCount = DocumentSynchronizationLimits.MaxTrackedOpenDocuments;
     private readonly object _sync = new();
     private readonly WorkloadCoordinator _workloadCoordinator;
@@ -14,12 +13,19 @@ internal sealed class DocumentSemanticReadinessHost : IDisposable
     private readonly DiagnosticLogging _diagnosticLogging;
     private readonly Dictionary<string, DocumentSemanticCorrelationIdentity> _proofs =
         new(DocumentIdentity.PlatformPathComparer);
-    private FirstDocumentSemanticWarmupState _firstDocumentSemanticWarmupState =
-        FirstDocumentSemanticWarmupState.NotStarted;
-    private Task? _firstDocumentSemanticWarmupTask;
-    private CancellationTokenSource? _firstDocumentSemanticWarmupPreemptionSource;
-    private bool _firstDocumentSemanticWarmupForegroundPreemptionRequested;
-    private bool _firstDocumentSemanticWarmupShutdownCancellationRequested;
+    private StartupCompletionReadinessState _startupCompletionReadinessState =
+        StartupCompletionReadinessState.NotStarted;
+    private long? _startupCompletionReadinessRoslynGeneration;
+    private StartupCompletionReadinessCandidate? _startupCompletionReadinessLatestCandidate;
+    private TaskCompletionSource<StartupCompletionReadinessJoinResult>? _startupCompletionReadinessSignal;
+    private bool _startupCompletionWarmupAttemptOwned;
+    private StartupCompletionReadinessCandidate? _startupCompletionWarmupActiveCandidate;
+    private Task? _startupCompletionWarmupTask;
+    private CancellationTokenSource? _startupCompletionWarmupPreemptionSource;
+    private bool _startupCompletionWarmupForegroundPreemptionRequested;
+    private bool _startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction;
+    private long? _startupCompletionForegroundSemanticReadinessRoslynGeneration;
+    private bool _startupCompletionWarmupShutdownCancellationRequested;
     private bool _shuttingDown;
     private bool _disposed;
 
@@ -47,119 +53,67 @@ internal sealed class DocumentSemanticReadinessHost : IDisposable
         return _workloadCoordinator.TryAdmitExclusive(WorkloadLane.SemanticReadiness);
     }
 
-    internal void ObserveFirstDocumentForSemanticWarmup(
+    internal void ObserveDocumentForStartupCompletionReadiness(
         DocumentSnapshotOperationResult snapshotResult)
     {
-        if (!FirstDocumentSemanticWarmupExperimentEnabled
-            || snapshotResult.Outcome != DocumentSynchronizationOutcome.Success
-            || snapshotResult.RoslynDocumentVersion != 1
-            || snapshotResult.ClientGeneration is not long clientGeneration
-            || clientGeneration <= 0
-            || snapshotResult.EpochId is not Guid epochId
-            || epochId == Guid.Empty
-            || string.IsNullOrWhiteSpace(snapshotResult.DocumentPath)
-            || snapshotResult.AcceptedClientVersion is not long acceptedClientVersion
-            || acceptedClientVersion <= 0
-            || snapshotResult.WorkspacePublicationIdentity is not WorkspacePublicationIdentity publicationIdentity
-            || snapshotResult.RoslynGeneration is not long roslynGeneration
-            || roslynGeneration <= 0)
-        {
+        if (!TryCreateStartupCompletionReadinessCandidate(snapshotResult, out StartupCompletionReadinessCandidate candidate))
             return;
-        }
 
-        CancellationTokenSource preemptionSource;
-        lock (_sync)
-        {
-            if (_disposed
-                || _shuttingDown
-                || _firstDocumentSemanticWarmupState != FirstDocumentSemanticWarmupState.NotStarted)
-            {
-                return;
-            }
+        AdoptStartupCompletionReadinessCandidate(candidate, "Snapshot");
+    }
 
-            _firstDocumentSemanticWarmupState = FirstDocumentSemanticWarmupState.Starting;
-            preemptionSource = new CancellationTokenSource();
-            _firstDocumentSemanticWarmupPreemptionSource = preemptionSource;
-        }
+    internal async Task<StartupCompletionReadinessJoinResult> JoinStartupCompletionReadinessAsync(
+        DocumentSemanticReadinessRequest request,
+        WorkspacePublicationIdentity expectedPublicationIdentity,
+        long expectedRoslynGeneration,
+        int expectedRoslynLspVersion,
+        long expectedRoslynOverlayRevision,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        WorkloadAdmissionResult admission;
-        try
-        {
-            admission = _workloadCoordinator.TryAdmitExclusive(WorkloadLane.SemanticWarmup);
-        }
-        catch (Exception exception)
-        {
-            MarkFirstDocumentSemanticWarmupTerminal();
-            _diagnosticLogging.WriteFault(
-                "completion_first_document_semantic_warmup_experiment_fault",
-                exception,
-                CreateWarmupCandidateDetails(snapshotResult, "AdmissionFault"));
-            return;
-        }
-
-        if (admission.Status != WorkloadAdmissionStatus.Admitted
-            || admission.Lease is not WorkloadExecutionLease lease)
-        {
-            MarkFirstDocumentSemanticWarmupTerminal();
-            _diagnosticLogging.WriteEvent(
-                "completion_first_document_semantic_warmup_experiment_skipped",
-                CreateWarmupCandidateDetails(snapshotResult, admission.Status.ToString()));
-            return;
-        }
-
-        DocumentSemanticReadinessRequest request = new(
-            CodeServiceProtocol.SemanticReadinessSchemaVersion,
-            clientGeneration,
-            epochId,
-            snapshotResult.DocumentPath!,
-            acceptedClientVersion);
-
-        _diagnosticLogging.WriteEvent(
-            "completion_first_document_semantic_warmup_experiment_started",
-            new
-            {
-                workloadOperationId = lease.OperationId,
-                documentPath = snapshotResult.DocumentPath,
-                clientGeneration = snapshotResult.ClientGeneration,
-                clientVersion = snapshotResult.AcceptedClientVersion,
-                workspaceGeneration = publicationIdentity.WorkspaceGeneration,
-                workspacePublicationVersion = publicationIdentity.PublicationVersion,
-                roslynGeneration = snapshotResult.RoslynGeneration,
-                roslynDocumentVersion = snapshotResult.RoslynDocumentVersion,
-            });
-
-        Task warmupTask;
-        try
-        {
-            lock (_sync)
-            {
-                _firstDocumentSemanticWarmupState = FirstDocumentSemanticWarmupState.Running;
-            }
-
-            warmupTask = RunFirstDocumentSemanticWarmupAsync(
+        if (!TryCreateStartupCompletionReadinessCandidate(
                 request,
-                snapshotResult,
-                lease,
-                preemptionSource);
-        }
-        catch (Exception exception)
+                expectedPublicationIdentity,
+                expectedRoslynGeneration,
+                expectedRoslynLspVersion,
+                expectedRoslynOverlayRevision,
+                out StartupCompletionReadinessCandidate candidate))
         {
-            MarkFirstDocumentSemanticWarmupTerminal();
-            _diagnosticLogging.WriteFault(
-                "completion_first_document_semantic_warmup_experiment_fault",
-                exception,
-                CreateWarmupCandidateDetails(snapshotResult, "StartFault"));
-            lease.Retire();
-            return;
+            return new StartupCompletionReadinessJoinResult(
+                StartupCompletionReadinessJoinOutcome.Unavailable,
+                expectedRoslynGeneration);
         }
 
-        lock (_sync)
+        StartupCompletionReadinessAdoption adoption = AdoptStartupCompletionReadinessCandidate(
+            candidate,
+            "Completion");
+        if (adoption.ImmediateResult is StartupCompletionReadinessJoinResult immediateResult)
+            return immediateResult;
+
+        Task<StartupCompletionReadinessJoinResult> waitTask = adoption.WaitTask
+            ?? throw new InvalidOperationException("unresolved startup completion readiness requires a generation-scoped signal.");
+
+        long started = Stopwatch.GetTimestamp();
+        _diagnosticLogging.WriteEvent(
+            "completion_startup_readiness_join_started",
+            CreateStartupCompletionReadinessCandidateDetails(candidate, "Completion"));
+
+        try
         {
-            _firstDocumentSemanticWarmupTask = warmupTask;
+            StartupCompletionReadinessJoinResult result = await waitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            WriteStartupCompletionReadinessJoinCompleted(candidate, result.Outcome.ToString(), started);
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            WriteStartupCompletionReadinessJoinCompleted(candidate, "Canceled", started);
+            throw;
         }
     }
 
-    public Task<DocumentSemanticReadinessResult> EnsureReadyAsync(
+    public async Task<DocumentSemanticReadinessResult> EnsureReadyAsync(
         DocumentSemanticReadinessRequest request,
         WorkloadExecutionLease lease,
         CancellationToken cancellationToken)
@@ -169,30 +123,153 @@ internal sealed class DocumentSemanticReadinessHost : IDisposable
         if (lease.Lane != WorkloadLane.SemanticReadiness)
             throw new InvalidOperationException("semantic readiness requires the semantic-readiness workload lane.");
 
-        RequestFirstDocumentSemanticWarmupPreemption();
+        long? foregroundStartupRoslynGeneration = BeginStartupCompletionForegroundSemanticReadiness(request);
 
-        return EnsureReadyCoreAsync(
-            request,
-            lease.OperationId,
-            cancellationToken,
-            cancellationToken);
+        try
+        {
+            DocumentSemanticReadinessResult result = await EnsureReadyCoreAsync(
+                request,
+                lease.OperationId,
+                cancellationToken,
+                cancellationToken).ConfigureAwait(false);
+
+            if ((result.Outcome is DocumentSemanticReadinessOutcome.Success
+                    or DocumentSemanticReadinessOutcome.AlreadyCurrent)
+                && result.RoslynGeneration is long roslynGeneration
+                && roslynGeneration > 0)
+            {
+                MarkStartupCompletionReadinessSatisfiedByForegroundSemanticReady(result, roslynGeneration);
+            }
+            else if (foregroundStartupRoslynGeneration is long foregroundGeneration)
+            {
+                ReleaseStartupCompletionReadinessWaitersAfterForegroundFailure(
+                    foregroundGeneration,
+                    result.Outcome.ToString());
+            }
+
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            if (foregroundStartupRoslynGeneration is long foregroundGeneration)
+            {
+                ReleaseStartupCompletionReadinessWaitersAfterForegroundFailure(
+                    foregroundGeneration,
+                    "Canceled");
+            }
+            throw;
+        }
+        catch (Exception)
+        {
+            if (foregroundStartupRoslynGeneration is long foregroundGeneration)
+            {
+                ReleaseStartupCompletionReadinessWaitersAfterForegroundFailure(
+                    foregroundGeneration,
+                    "Fault");
+            }
+            throw;
+        }
+        finally
+        {
+            EndStartupCompletionForegroundSemanticReadiness(foregroundStartupRoslynGeneration);
+        }
     }
 
-    internal Task<DocumentSemanticReadinessResult> EnsureReadyForStartupWarmupAsync(
-        DocumentSemanticReadinessRequest request,
+    private async Task<StartupCompletionGenerationWarmupResult> EstablishStartupCompletionGenerationReadinessAsync(
+        StartupCompletionWarmupReservation reservation,
         WorkloadExecutionLease lease,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(reservation);
         ArgumentNullException.ThrowIfNull(lease);
         if (lease.Lane != WorkloadLane.SemanticWarmup)
-            throw new InvalidOperationException("startup semantic warm-up requires the semantic-warmup workload lane.");
+            throw new InvalidOperationException("startup completion generation warm-up requires the semantic-warmup workload lane.");
 
-        return EnsureReadyCoreAsync(
-            request,
-            lease.OperationId,
-            cancellationToken,
-            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        StartupCompletionGenerationWarmupOutcome preRpcValidation = TryCaptureStartupCompletionGenerationWarmupContext(
+            reservation,
+            out WorkspacePublication publication,
+            out DocumentIdentity documentIdentity);
+        if (preRpcValidation != StartupCompletionGenerationWarmupOutcome.Success)
+        {
+            return new StartupCompletionGenerationWarmupResult(
+                preRpcValidation,
+                RoslynOutcome: null,
+                DiagnosticCount: null);
+        }
+
+        RoslynDocumentDiagnosticScope diagnosticScope = RoslynDocumentDiagnosticScope.CompilerSemanticOnly;
+        long diagnosticStarted = Stopwatch.GetTimestamp();
+        _diagnosticLogging.WriteEvent(
+            "completion_startup_readiness_diagnostic_started",
+            CreateStartupCompletionReadinessDiagnosticDetails(
+                reservation.Candidate,
+                lease.OperationId,
+                diagnosticScope,
+                roslynOutcome: "Started",
+                diagnosticCount: null,
+                durationMs: null));
+
+        RoslynSemanticReadinessResult roslynResult;
+        try
+        {
+            roslynResult = await _roslynLanguageServerHost.EstablishSemanticReadinessAsync(
+                publication.WorkspaceIdentity,
+                reservation.Candidate.WorkspacePublicationIdentity,
+                reservation.Candidate.RoslynGeneration,
+                documentIdentity,
+                diagnosticScope,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_diagnostic_completed",
+                CreateStartupCompletionReadinessDiagnosticDetails(
+                    reservation.Candidate,
+                    lease.OperationId,
+                    diagnosticScope,
+                    roslynOutcome: "Canceled",
+                    diagnosticCount: null,
+                    durationMs: Stopwatch.GetElapsedTime(diagnosticStarted, Stopwatch.GetTimestamp()).TotalMilliseconds));
+            throw;
+        }
+
+        double diagnosticDurationMs = Stopwatch.GetElapsedTime(
+            diagnosticStarted,
+            Stopwatch.GetTimestamp()).TotalMilliseconds;
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        StartupCompletionGenerationWarmupOutcome postRpcValidation =
+            ValidateStartupCompletionGenerationEnvironment(reservation);
+
+        StartupCompletionGenerationWarmupOutcome outcome = postRpcValidation != StartupCompletionGenerationWarmupOutcome.Success
+            ? postRpcValidation
+            : roslynResult.Outcome switch
+            {
+                RoslynSemanticReadinessOutcome.Success => StartupCompletionGenerationWarmupOutcome.Success,
+                RoslynSemanticReadinessOutcome.SemanticUnavailable => StartupCompletionGenerationWarmupOutcome.SemanticUnavailable,
+                RoslynSemanticReadinessOutcome.RoslynUnavailable => StartupCompletionGenerationWarmupOutcome.RoslynUnavailable,
+                RoslynSemanticReadinessOutcome.Stale => StartupCompletionGenerationWarmupOutcome.EnvironmentChanged,
+                _ => StartupCompletionGenerationWarmupOutcome.RoslynUnavailable,
+            };
+
+        _diagnosticLogging.WriteEvent(
+            "completion_startup_readiness_diagnostic_completed",
+            CreateStartupCompletionReadinessDiagnosticDetails(
+                reservation.Candidate,
+                lease.OperationId,
+                diagnosticScope,
+                roslynResult.Outcome.ToString(),
+                roslynResult.DiagnosticCount,
+                diagnosticDurationMs));
+
+        return new StartupCompletionGenerationWarmupResult(
+            outcome,
+            roslynResult.Outcome,
+            roslynResult.DiagnosticCount);
     }
 
     private async Task<DocumentSemanticReadinessResult> EnsureReadyCoreAsync(
@@ -314,6 +391,7 @@ internal sealed class DocumentSemanticReadinessHost : IDisposable
                 publication.Identity,
                 snapshot.RoslynGeneration,
                 identity,
+                RoslynDocumentDiagnosticScope.AllEnabledDocumentSources,
                 operationCancellation.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (
@@ -427,29 +505,45 @@ internal sealed class DocumentSemanticReadinessHost : IDisposable
     public void BeginShutdown()
     {
         CancellationTokenSource? preemptionSource;
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? readinessSignal;
+        long? roslynGeneration;
         lock (_sync)
         {
             if (_disposed)
                 return;
 
             _shuttingDown = true;
-            if (IsFirstDocumentSemanticWarmupActiveLocked())
+            if (_startupCompletionWarmupAttemptOwned)
             {
-                _firstDocumentSemanticWarmupShutdownCancellationRequested = true;
-                preemptionSource = _firstDocumentSemanticWarmupPreemptionSource;
+                _startupCompletionWarmupShutdownCancellationRequested = true;
+                preemptionSource = _startupCompletionWarmupPreemptionSource;
             }
             else
             {
                 preemptionSource = null;
             }
+
+            readinessSignal = IsStartupCompletionReadinessUnresolvedLocked()
+                ? _startupCompletionReadinessSignal
+                : null;
+            roslynGeneration = _startupCompletionReadinessRoslynGeneration;
         }
 
         CancelNoThrow(preemptionSource);
+        if (readinessSignal is not null && roslynGeneration is long generation)
+        {
+            readinessSignal.TrySetResult(new StartupCompletionReadinessJoinResult(
+                StartupCompletionReadinessJoinOutcome.Unavailable,
+                generation));
+        }
     }
 
     public void Dispose()
     {
         CancellationTokenSource? preemptionSource;
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? readinessSignal;
+        long? roslynGeneration;
+        bool disposePreemptionSource;
         lock (_sync)
         {
             if (_disposed)
@@ -458,171 +552,1302 @@ internal sealed class DocumentSemanticReadinessHost : IDisposable
             _shuttingDown = true;
             _proofs.Clear();
             _disposed = true;
-            preemptionSource = _firstDocumentSemanticWarmupPreemptionSource;
+            if (_startupCompletionWarmupAttemptOwned)
+                _startupCompletionWarmupShutdownCancellationRequested = true;
+            preemptionSource = _startupCompletionWarmupPreemptionSource;
+            disposePreemptionSource = !_startupCompletionWarmupAttemptOwned;
+            readinessSignal = _startupCompletionReadinessSignal;
+            roslynGeneration = _startupCompletionReadinessRoslynGeneration;
         }
 
-        preemptionSource?.Dispose();
+        CancelNoThrow(preemptionSource);
+        if (readinessSignal is not null && roslynGeneration is long generation)
+        {
+            readinessSignal.TrySetResult(new StartupCompletionReadinessJoinResult(
+                StartupCompletionReadinessJoinOutcome.Unavailable,
+                generation));
+        }
+
+        if (disposePreemptionSource)
+            preemptionSource?.Dispose();
     }
 
-    private async Task RunFirstDocumentSemanticWarmupAsync(
-        DocumentSemanticReadinessRequest request,
+    private StartupCompletionGenerationWarmupOutcome TryCaptureStartupCompletionGenerationWarmupContext(
+        StartupCompletionWarmupReservation reservation,
+        out WorkspacePublication publication,
+        out DocumentIdentity documentIdentity)
+    {
+        publication = null!;
+        documentIdentity = null!;
+
+        lock (_sync)
+        {
+            if (_disposed
+                || _shuttingDown
+                || !_startupCompletionWarmupAttemptOwned
+                || !ReferenceEquals(_startupCompletionWarmupPreemptionSource, reservation.PreemptionSource)
+                || !Equals(_startupCompletionWarmupActiveCandidate, reservation.Candidate)
+                || _startupCompletionReadinessRoslynGeneration != reservation.Candidate.RoslynGeneration)
+            {
+                return StartupCompletionGenerationWarmupOutcome.EnvironmentChanged;
+            }
+        }
+
+        if (!_workspaceHost.TryGetCurrentPublication(out publication)
+            || publication.Identity != reservation.Candidate.WorkspacePublicationIdentity)
+        {
+            return StartupCompletionGenerationWarmupOutcome.EnvironmentChanged;
+        }
+
+        DocumentIdentityCreationResult identityResult = DocumentIdentity.TryCreate(
+            reservation.Candidate.Request.DocumentPath,
+            publication.WorkspaceIdentity,
+            publication.ProjectSnapshot);
+        if (!identityResult.IsSuccess || !identityResult.IsCurrentWorkspaceSource)
+            return StartupCompletionGenerationWarmupOutcome.SeedUnavailable;
+
+        documentIdentity = identityResult.Identity!;
+        if (!_documentSynchronizationHost.TryGetDocumentSnapshot(
+                documentIdentity.RelativePath,
+                publication.ProjectSnapshot,
+                out DocumentSynchronizationDocumentSnapshot currentSnapshot)
+            || !currentSnapshot.HasCurrentAuthoritySnapshot
+            || !currentSnapshot.IsCurrentWorkspaceSource
+            || !currentSnapshot.IsOpenInRoslyn)
+        {
+            return StartupCompletionGenerationWarmupOutcome.SeedUnavailable;
+        }
+
+        if (currentSnapshot.LastWorkspacePublicationIdentity != reservation.Candidate.WorkspacePublicationIdentity
+            || currentSnapshot.RoslynGeneration != reservation.Candidate.RoslynGeneration)
+        {
+            return StartupCompletionGenerationWarmupOutcome.EnvironmentChanged;
+        }
+
+        RoslynLanguageServerSnapshot roslynSnapshot = _roslynLanguageServerHost.GetSnapshot();
+        if (roslynSnapshot.RoslynGeneration != reservation.Candidate.RoslynGeneration
+            || !roslynSnapshot.IsProjectLoaded
+            || !_roslynLanguageServerHost.IsProjectLoadCurrentFor(
+                publication.WorkspaceIdentity,
+                reservation.Candidate.WorkspacePublicationIdentity,
+                roslynSnapshot))
+        {
+            return StartupCompletionGenerationWarmupOutcome.EnvironmentChanged;
+        }
+
+        return StartupCompletionGenerationWarmupOutcome.Success;
+    }
+
+    private StartupCompletionGenerationWarmupOutcome ValidateStartupCompletionGenerationEnvironment(
+        StartupCompletionWarmupReservation reservation)
+    {
+        lock (_sync)
+        {
+            if (_disposed
+                || _shuttingDown
+                || !_startupCompletionWarmupAttemptOwned
+                || !ReferenceEquals(_startupCompletionWarmupPreemptionSource, reservation.PreemptionSource)
+                || !Equals(_startupCompletionWarmupActiveCandidate, reservation.Candidate))
+            {
+                return StartupCompletionGenerationWarmupOutcome.EnvironmentChanged;
+            }
+        }
+
+        if (!_workspaceHost.TryGetCurrentPublication(out WorkspacePublication publication)
+            || publication.Identity != reservation.Candidate.WorkspacePublicationIdentity)
+        {
+            return StartupCompletionGenerationWarmupOutcome.EnvironmentChanged;
+        }
+
+        RoslynLanguageServerSnapshot roslynSnapshot = _roslynLanguageServerHost.GetSnapshot();
+        if (roslynSnapshot.RoslynGeneration != reservation.Candidate.RoslynGeneration
+            || !roslynSnapshot.IsProjectLoaded
+            || !_roslynLanguageServerHost.IsProjectLoadCurrentFor(
+                publication.WorkspaceIdentity,
+                reservation.Candidate.WorkspacePublicationIdentity,
+                roslynSnapshot))
+        {
+            return StartupCompletionGenerationWarmupOutcome.EnvironmentChanged;
+        }
+
+        return StartupCompletionGenerationWarmupOutcome.Success;
+    }
+
+    private bool TryCreateStartupCompletionReadinessCandidate(
         DocumentSnapshotOperationResult snapshotResult,
-        WorkloadExecutionLease lease,
-        CancellationTokenSource preemptionSource)
+        out StartupCompletionReadinessCandidate candidate)
+    {
+        candidate = null!;
+        if (snapshotResult.Outcome is not (DocumentSynchronizationOutcome.Success or DocumentSynchronizationOutcome.AlreadyCurrent)
+            || snapshotResult.ClientGeneration is not long clientGeneration
+            || clientGeneration <= 0
+            || snapshotResult.EpochId is not Guid epochId
+            || epochId == Guid.Empty
+            || string.IsNullOrWhiteSpace(snapshotResult.DocumentPath)
+            || snapshotResult.AcceptedClientVersion is not long acceptedClientVersion
+            || acceptedClientVersion <= 0
+            || snapshotResult.WorkspacePublicationIdentity is not WorkspacePublicationIdentity publicationIdentity
+            || snapshotResult.RoslynGeneration is not long roslynGeneration
+            || roslynGeneration <= 0
+            || snapshotResult.RoslynDocumentVersion is not int roslynDocumentVersion
+            || roslynDocumentVersion <= 0)
+        {
+            return false;
+        }
+
+        DocumentSemanticReadinessRequest request = new(
+            CodeServiceProtocol.SemanticReadinessSchemaVersion,
+            clientGeneration,
+            epochId,
+            snapshotResult.DocumentPath!,
+            acceptedClientVersion);
+
+        return TryCreateStartupCompletionReadinessCandidate(
+            request,
+            publicationIdentity,
+            roslynGeneration,
+            roslynDocumentVersion,
+            expectedRoslynOverlayRevision: null,
+            out candidate);
+    }
+
+    private bool TryCreateStartupCompletionReadinessCandidate(
+        DocumentSemanticReadinessRequest request,
+        WorkspacePublicationIdentity expectedPublicationIdentity,
+        long expectedRoslynGeneration,
+        int expectedRoslynLspVersion,
+        long expectedRoslynOverlayRevision,
+        out StartupCompletionReadinessCandidate candidate)
+        => TryCreateStartupCompletionReadinessCandidate(
+            request,
+            expectedPublicationIdentity,
+            expectedRoslynGeneration,
+            expectedRoslynLspVersion,
+            (long?)expectedRoslynOverlayRevision,
+            out candidate);
+
+    private bool TryCreateStartupCompletionReadinessCandidate(
+        DocumentSemanticReadinessRequest request,
+        WorkspacePublicationIdentity expectedPublicationIdentity,
+        long expectedRoslynGeneration,
+        int expectedRoslynLspVersion,
+        long? expectedRoslynOverlayRevision,
+        out StartupCompletionReadinessCandidate candidate)
+    {
+        candidate = null!;
+        if (request.SchemaVersion != CodeServiceProtocol.SemanticReadinessSchemaVersion
+            || request.ClientGeneration <= 0
+            || request.EpochId == Guid.Empty
+            || request.ClientVersion <= 0
+            || string.IsNullOrWhiteSpace(request.DocumentPath)
+            || expectedRoslynGeneration <= 0
+            || expectedRoslynLspVersion <= 0
+            || expectedRoslynOverlayRevision is long invalidRevision && invalidRevision <= 0)
+        {
+            return false;
+        }
+
+        lock (_sync)
+        {
+            if (_disposed || _shuttingDown)
+                return false;
+        }
+
+        if (!_workspaceHost.TryGetCurrentPublication(out WorkspacePublication publication)
+            || publication.Identity != expectedPublicationIdentity
+            || !_documentSynchronizationHost.TryGetCurrentAuthority(out DocumentClientAuthority authority)
+            || authority.ClientGeneration != request.ClientGeneration
+            || authority.EpochId != request.EpochId
+            || !_documentSynchronizationHost.TryGetDocumentSnapshot(
+                request.DocumentPath,
+                publication.ProjectSnapshot,
+                out DocumentSynchronizationDocumentSnapshot snapshot)
+            || snapshot.ClientGeneration != request.ClientGeneration
+            || snapshot.EpochId != request.EpochId
+            || snapshot.AcceptedClientVersion != request.ClientVersion
+            || snapshot.LastWorkspacePublicationIdentity != expectedPublicationIdentity
+            || snapshot.RoslynGeneration != expectedRoslynGeneration
+            || snapshot.RoslynLspVersion != expectedRoslynLspVersion
+            || (expectedRoslynOverlayRevision is long expectedRevision
+                && snapshot.RoslynOverlayRevision != expectedRevision)
+            || !snapshot.HasCurrentAuthoritySnapshot
+            || !snapshot.IsCurrentWorkspaceSource
+            || !snapshot.IsOpenInRoslyn
+            || !IsRoslynCorrelationCurrent(publication, snapshot))
+        {
+            return false;
+        }
+
+        candidate = new StartupCompletionReadinessCandidate(
+            request,
+            expectedPublicationIdentity,
+            expectedRoslynGeneration,
+            expectedRoslynLspVersion,
+            snapshot.RoslynOverlayRevision);
+        return true;
+    }
+
+    private StartupCompletionReadinessAdoption AdoptStartupCompletionReadinessCandidate(
+        StartupCompletionReadinessCandidate candidate,
+        string source)
+    {
+        StartupCompletionReadinessGenerationReset? generationReset = null;
+        StartupCompletionWarmupReservation? reservation = null;
+        StartupCompletionReadinessJoinResult? immediateResult = null;
+        Task<StartupCompletionReadinessJoinResult>? waitTask = null;
+        bool candidateObserved = false;
+        bool candidateReplaced = false;
+
+        lock (_sync)
+        {
+            if (_disposed || _shuttingDown)
+            {
+                immediateResult = new StartupCompletionReadinessJoinResult(
+                    StartupCompletionReadinessJoinOutcome.Unavailable,
+                    candidate.RoslynGeneration);
+            }
+            else
+            {
+                generationReset = ResetStartupCompletionReadinessGenerationLocked(candidate.RoslynGeneration);
+
+                if (_startupCompletionReadinessState == StartupCompletionReadinessState.Satisfied)
+                {
+                    immediateResult = new StartupCompletionReadinessJoinResult(
+                        StartupCompletionReadinessJoinOutcome.Satisfied,
+                        candidate.RoslynGeneration);
+                }
+                else if (_startupCompletionReadinessState == StartupCompletionReadinessState.Degraded)
+                {
+                    immediateResult = new StartupCompletionReadinessJoinResult(
+                        StartupCompletionReadinessJoinOutcome.Degraded,
+                        candidate.RoslynGeneration);
+                }
+                else
+                {
+                    if (_startupCompletionReadinessLatestCandidate is null)
+                    {
+                        candidateObserved = true;
+                    }
+                    else if (!_startupCompletionReadinessLatestCandidate.Equals(candidate))
+                    {
+                        candidateReplaced = true;
+                    }
+
+                    _startupCompletionReadinessLatestCandidate = candidate;
+                    reservation = TryReserveStartupCompletionWarmupLocked();
+                    waitTask = _startupCompletionReadinessSignal?.Task;
+                }
+            }
+        }
+
+        PublishStartupCompletionReadinessGenerationReset(generationReset, "CandidateGenerationChanged");
+
+        if (candidateObserved)
+        {
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_candidate_observed",
+                CreateStartupCompletionReadinessCandidateDetails(candidate, source));
+        }
+        else if (candidateReplaced)
+        {
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_candidate_replaced",
+                CreateStartupCompletionReadinessCandidateDetails(candidate, source));
+        }
+
+        if (reservation is not null)
+            StartReservedStartupCompletionWarmup(reservation);
+
+        return new StartupCompletionReadinessAdoption(waitTask, immediateResult);
+    }
+
+    private StartupCompletionWarmupReservation? TryReserveStartupCompletionWarmupLocked()
+    {
+        if (_disposed
+            || _shuttingDown
+            || _startupCompletionWarmupAttemptOwned
+            || _startupCompletionReadinessState != StartupCompletionReadinessState.NotStarted
+            || _startupCompletionReadinessLatestCandidate is not StartupCompletionReadinessCandidate candidate
+            || _startupCompletionReadinessRoslynGeneration != candidate.RoslynGeneration
+            || _startupCompletionForegroundSemanticReadinessRoslynGeneration == candidate.RoslynGeneration)
+        {
+            return null;
+        }
+
+        CancellationTokenSource preemptionSource = new();
+        _startupCompletionWarmupAttemptOwned = true;
+        _startupCompletionWarmupActiveCandidate = candidate;
+        _startupCompletionWarmupPreemptionSource = preemptionSource;
+        _startupCompletionWarmupForegroundPreemptionRequested = false;
+        _startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction = false;
+        _startupCompletionWarmupShutdownCancellationRequested = false;
+        _startupCompletionReadinessState = StartupCompletionReadinessState.Starting;
+        return new StartupCompletionWarmupReservation(candidate, preemptionSource);
+    }
+
+    private void StartReservedStartupCompletionWarmup(
+        StartupCompletionWarmupReservation reservation)
+    {
+        WorkloadAdmissionResult admission;
+        try
+        {
+            admission = _workloadCoordinator.TryAdmitExclusive(WorkloadLane.SemanticWarmup);
+        }
+        catch (Exception exception)
+        {
+            FinishStartupCompletionWarmupWithoutRun(
+                reservation,
+                "AdmissionFault",
+                exception,
+                shutdown: IsStartupCompletionReadinessShuttingDown());
+            return;
+        }
+
+        if (admission.Status != WorkloadAdmissionStatus.Admitted
+            || admission.Lease is not WorkloadExecutionLease lease)
+        {
+            FinishStartupCompletionWarmupWithoutRun(
+                reservation,
+                $"Admission{admission.Status}",
+                fault: null,
+                shutdown: admission.Status == WorkloadAdmissionStatus.ShuttingDown
+                    || IsStartupCompletionReadinessShuttingDown());
+            return;
+        }
+
+        lock (_sync)
+        {
+            if (_startupCompletionWarmupAttemptOwned
+                && ReferenceEquals(_startupCompletionWarmupPreemptionSource, reservation.PreemptionSource)
+                && Equals(_startupCompletionWarmupActiveCandidate, reservation.Candidate)
+                && _startupCompletionReadinessRoslynGeneration == reservation.Candidate.RoslynGeneration
+                && IsStartupCompletionReadinessUnresolvedLocked())
+            {
+                _startupCompletionReadinessState = StartupCompletionReadinessState.Running;
+            }
+        }
+
+        _diagnosticLogging.WriteEvent(
+            "completion_startup_readiness_attempt_started",
+            CreateStartupCompletionReadinessAttemptDetails(
+                reservation.Candidate,
+                lease.OperationId,
+                "Started"));
+
+        Task warmupTask = RunStartupCompletionWarmupAsync(
+            reservation,
+            lease);
+        lock (_sync)
+        {
+            if (_startupCompletionWarmupAttemptOwned
+                && ReferenceEquals(_startupCompletionWarmupPreemptionSource, reservation.PreemptionSource)
+                && Equals(_startupCompletionWarmupActiveCandidate, reservation.Candidate))
+            {
+                _startupCompletionWarmupTask = warmupTask;
+            }
+        }
+    }
+
+    private void FinishStartupCompletionWarmupWithoutRun(
+        StartupCompletionWarmupReservation reservation,
+        string reason,
+        Exception? fault,
+        bool shutdown)
+    {
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? signal = null;
+        StartupCompletionReadinessJoinResult? signalResult = null;
+        StartupCompletionWarmupReservation? nextReservation = null;
+        bool degraded = false;
+
+        lock (_sync)
+        {
+            if (_startupCompletionWarmupAttemptOwned
+                && ReferenceEquals(_startupCompletionWarmupPreemptionSource, reservation.PreemptionSource)
+                && Equals(_startupCompletionWarmupActiveCandidate, reservation.Candidate))
+            {
+                ClearStartupCompletionWarmupAttemptLocked();
+                if (_startupCompletionReadinessRoslynGeneration == reservation.Candidate.RoslynGeneration
+                    && IsStartupCompletionReadinessUnresolvedLocked())
+                {
+                    if (shutdown || _disposed || _shuttingDown)
+                    {
+                        signal = _startupCompletionReadinessSignal;
+                        signalResult = new StartupCompletionReadinessJoinResult(
+                            StartupCompletionReadinessJoinOutcome.Unavailable,
+                            reservation.Candidate.RoslynGeneration);
+                    }
+                    else
+                    {
+                        _startupCompletionReadinessState = StartupCompletionReadinessState.Degraded;
+                        _startupCompletionReadinessLatestCandidate = null;
+                        signal = _startupCompletionReadinessSignal;
+                        signalResult = new StartupCompletionReadinessJoinResult(
+                            StartupCompletionReadinessJoinOutcome.Degraded,
+                            reservation.Candidate.RoslynGeneration);
+                        degraded = true;
+                    }
+                }
+                else if (!shutdown && !_disposed && !_shuttingDown)
+                {
+                    nextReservation = TryReserveStartupCompletionWarmupLocked();
+                }
+            }
+        }
+
+        reservation.PreemptionSource.Dispose();
+
+        if (fault is not null)
+        {
+            _diagnosticLogging.WriteFault(
+                "completion_startup_readiness_attempt_fault",
+                fault,
+                CreateStartupCompletionReadinessCandidateDetails(reservation.Candidate, reason));
+        }
+        else
+        {
+            _diagnosticLogging.WriteEvent(
+                degraded
+                    ? "completion_startup_readiness_attempt_degraded"
+                    : "completion_startup_readiness_attempt_unavailable",
+                CreateStartupCompletionReadinessCandidateDetails(reservation.Candidate, reason));
+        }
+
+        if (signal is not null && signalResult is StartupCompletionReadinessJoinResult result)
+            signal.TrySetResult(result);
+
+        if (degraded)
+        {
+            WriteStartupCompletionReadinessGoalEvent(
+                "completion_startup_readiness_goal_degraded",
+                reservation.Candidate,
+                reason,
+                workloadOperationId: null);
+        }
+
+        if (nextReservation is not null)
+        {
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_attempt_rearmed",
+                CreateStartupCompletionReadinessCandidateDetails(nextReservation.Candidate, "GenerationReplacement"));
+            StartReservedStartupCompletionWarmup(nextReservation);
+        }
+    }
+
+    private async Task RunStartupCompletionWarmupAsync(
+        StartupCompletionWarmupReservation reservation,
+        WorkloadExecutionLease lease)
     {
         await Task.Yield();
 
         long started = Stopwatch.GetTimestamp();
-        string semanticOutcome = DocumentSemanticReadinessOutcome.Unavailable.ToString();
+        StartupCompletionWarmupDisposition disposition = StartupCompletionWarmupDisposition.Degraded;
+        string warmupOutcome = StartupCompletionGenerationWarmupOutcome.RoslynUnavailable.ToString();
+        string? roslynOutcome = null;
+        int? diagnosticCount = null;
         Exception? fault = null;
+        long? replacementRoslynGeneration = null;
 
         try
         {
             using CancellationTokenSource operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                 lease.ServiceWorkShutdownToken,
-                preemptionSource.Token);
+                reservation.PreemptionSource.Token);
 
-            DocumentSemanticReadinessResult result = await EnsureReadyForStartupWarmupAsync(
-                request,
+            StartupCompletionGenerationWarmupResult result = await EstablishStartupCompletionGenerationReadinessAsync(
+                reservation,
                 lease,
                 operationCancellation.Token).ConfigureAwait(false);
-            semanticOutcome = result.Outcome.ToString();
+            warmupOutcome = result.Outcome.ToString();
+            roslynOutcome = result.RoslynOutcome?.ToString();
+            diagnosticCount = result.DiagnosticCount;
+
+            if (result.Outcome == StartupCompletionGenerationWarmupOutcome.Success)
+            {
+                disposition = StartupCompletionWarmupDisposition.Satisfied;
+            }
+            else
+            {
+                if (IsStartupCompletionReadinessShuttingDown()
+                    || lease.ServiceWorkShutdownToken.IsCancellationRequested)
+                {
+                    disposition = StartupCompletionWarmupDisposition.Shutdown;
+                }
+                else
+                {
+                    RoslynLanguageServerSnapshot roslynSnapshot = _roslynLanguageServerHost.GetSnapshot();
+                    if (roslynSnapshot.RoslynGeneration > 0
+                        && roslynSnapshot.RoslynGeneration != reservation.Candidate.RoslynGeneration)
+                    {
+                        disposition = StartupCompletionWarmupDisposition.GenerationChanged;
+                        replacementRoslynGeneration = roslynSnapshot.RoslynGeneration;
+                    }
+                    else if (result.Outcome == StartupCompletionGenerationWarmupOutcome.SeedUnavailable)
+                    {
+                        disposition = StartupCompletionWarmupDisposition.SeedUnavailable;
+                    }
+                    else if (result.Outcome == StartupCompletionGenerationWarmupOutcome.EnvironmentChanged)
+                    {
+                        disposition = StartupCompletionWarmupDisposition.EnvironmentChanged;
+                    }
+                    else
+                    {
+                        disposition = StartupCompletionWarmupDisposition.Degraded;
+                    }
+                }
+            }
         }
-        catch (OperationCanceledException) when (preemptionSource.IsCancellationRequested)
+        catch (OperationCanceledException) when (reservation.PreemptionSource.IsCancellationRequested)
         {
             bool shutdownCancellationRequested;
+            bool foregroundPreemptionRequested;
             lock (_sync)
             {
-                shutdownCancellationRequested = _firstDocumentSemanticWarmupShutdownCancellationRequested;
+                shutdownCancellationRequested = _startupCompletionWarmupShutdownCancellationRequested;
+                foregroundPreemptionRequested = _startupCompletionWarmupForegroundPreemptionRequested;
             }
 
-            semanticOutcome = shutdownCancellationRequested
-                || lease.ServiceWorkShutdownToken.IsCancellationRequested
-                ? "ServiceShutdown"
-                : "ForegroundPreempted";
+            if (shutdownCancellationRequested || lease.ServiceWorkShutdownToken.IsCancellationRequested)
+            {
+                warmupOutcome = "ServiceShutdown";
+                disposition = StartupCompletionWarmupDisposition.Shutdown;
+            }
+            else
+            {
+                RoslynLanguageServerSnapshot roslynSnapshot = _roslynLanguageServerHost.GetSnapshot();
+                if (roslynSnapshot.RoslynGeneration > 0
+                    && roslynSnapshot.RoslynGeneration != reservation.Candidate.RoslynGeneration)
+                {
+                    warmupOutcome = "GenerationChanged";
+                    disposition = StartupCompletionWarmupDisposition.GenerationChanged;
+                    replacementRoslynGeneration = roslynSnapshot.RoslynGeneration;
+                }
+                else if (foregroundPreemptionRequested)
+                {
+                    warmupOutcome = "ForegroundPreempted";
+                    disposition = StartupCompletionWarmupDisposition.ForegroundPreempted;
+                }
+                else
+                {
+                    warmupOutcome = "UnexpectedPreemption";
+                    disposition = StartupCompletionWarmupDisposition.Degraded;
+                }
+            }
         }
         catch (OperationCanceledException) when (lease.ServiceWorkShutdownToken.IsCancellationRequested)
         {
-            semanticOutcome = "ServiceShutdown";
+            warmupOutcome = "ServiceShutdown";
+            disposition = StartupCompletionWarmupDisposition.Shutdown;
         }
         catch (Exception exception)
         {
             fault = exception;
-            semanticOutcome = "Fault";
+            warmupOutcome = "Fault";
+            disposition = StartupCompletionWarmupDisposition.Degraded;
         }
         finally
         {
-            DiagnosticLogging diagnosticLogging = _diagnosticLogging;
-            bool foregroundPreemptionRequested;
-            lock (_sync)
-            {
-                foregroundPreemptionRequested = _firstDocumentSemanticWarmupForegroundPreemptionRequested;
-                _firstDocumentSemanticWarmupState = FirstDocumentSemanticWarmupState.Terminal;
-            }
-
             double durationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds;
-            if (fault is null)
-            {
-                diagnosticLogging.WriteEvent(
-                    "completion_first_document_semantic_warmup_experiment_completed",
-                    new
-                    {
-                        workloadOperationId = lease.OperationId,
-                        documentPath = snapshotResult.DocumentPath,
-                        clientVersion = snapshotResult.AcceptedClientVersion,
-                        semanticOutcome,
-                        durationMs,
-                        foregroundPreemptionRequested,
-                    });
-            }
-            else
-            {
-                diagnosticLogging.WriteFault(
-                    "completion_first_document_semantic_warmup_experiment_fault",
-                    fault,
-                    new
-                    {
-                        workloadOperationId = lease.OperationId,
-                        documentPath = snapshotResult.DocumentPath,
-                        clientVersion = snapshotResult.AcceptedClientVersion,
-                        semanticOutcome,
-                        durationMs,
-                        foregroundPreemptionRequested,
-                    });
-            }
-
+            bool retirementSucceeded = true;
             try
             {
                 lease.Retire();
             }
             catch (Exception retirementException)
             {
-                diagnosticLogging.WriteFault(
-                    "completion_first_document_semantic_warmup_experiment_fault",
+                retirementSucceeded = false;
+                _diagnosticLogging.WriteFault(
+                    "completion_startup_readiness_attempt_fault",
                     retirementException,
-                    new
-                    {
-                        workloadOperationId = lease.OperationId,
-                        documentPath = snapshotResult.DocumentPath,
-                        clientVersion = snapshotResult.AcceptedClientVersion,
-                        semanticOutcome = "RetirementFault",
-                        durationMs,
-                        foregroundPreemptionRequested,
-                    });
+                    CreateStartupCompletionReadinessAttemptDetails(
+                        reservation.Candidate,
+                        lease.OperationId,
+                        "RetirementFault"));
             }
+
+            FinishStartupCompletionWarmupAfterRetirement(
+                reservation,
+                lease.OperationId,
+                disposition,
+                warmupOutcome,
+                roslynOutcome,
+                diagnosticCount,
+                durationMs,
+                fault,
+                retirementSucceeded,
+                replacementRoslynGeneration);
         }
     }
 
-    private void RequestFirstDocumentSemanticWarmupPreemption()
+    private void FinishStartupCompletionWarmupAfterRetirement(
+        StartupCompletionWarmupReservation reservation,
+        long workloadOperationId,
+        StartupCompletionWarmupDisposition disposition,
+        string warmupOutcome,
+        string? roslynOutcome,
+        int? diagnosticCount,
+        double durationMs,
+        Exception? fault,
+        bool retirementSucceeded,
+        long? replacementRoslynGeneration)
     {
-        CancellationTokenSource? preemptionSource = null;
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? terminalSignal = null;
+        StartupCompletionReadinessJoinResult? terminalResult = null;
+        StartupCompletionReadinessGenerationReset? generationReset = null;
+        StartupCompletionWarmupReservation? nextReservation = null;
+        string? rearmReason = null;
+        bool goalSatisfied = false;
+        bool goalDegraded = false;
+        StartupCompletionReadinessCandidate? latestObservedCandidate = null;
+
         lock (_sync)
         {
-            if (!IsFirstDocumentSemanticWarmupActiveLocked()
-                || _firstDocumentSemanticWarmupPreemptionSource is not CancellationTokenSource activeSource
-                || activeSource.IsCancellationRequested
-                || _firstDocumentSemanticWarmupForegroundPreemptionRequested)
+            if (_startupCompletionReadinessLatestCandidate is StartupCompletionReadinessCandidate latestCandidate
+                && latestCandidate.RoslynGeneration == reservation.Candidate.RoslynGeneration
+                && !latestCandidate.Equals(reservation.Candidate))
+            {
+                latestObservedCandidate = latestCandidate;
+            }
+
+            if (_startupCompletionWarmupAttemptOwned
+                && ReferenceEquals(_startupCompletionWarmupPreemptionSource, reservation.PreemptionSource)
+                && Equals(_startupCompletionWarmupActiveCandidate, reservation.Candidate))
+            {
+                ClearStartupCompletionWarmupAttemptLocked();
+            }
+
+            if (!retirementSucceeded)
+            {
+                if (_startupCompletionReadinessRoslynGeneration is long currentGeneration
+                    && IsStartupCompletionReadinessUnresolvedLocked())
+                {
+                    _startupCompletionReadinessState = StartupCompletionReadinessState.Degraded;
+                    _startupCompletionReadinessLatestCandidate = null;
+                    terminalSignal = _startupCompletionReadinessSignal;
+                    terminalResult = new StartupCompletionReadinessJoinResult(
+                        StartupCompletionReadinessJoinOutcome.Degraded,
+                        currentGeneration);
+                    goalDegraded = true;
+                }
+            }
+            else
+            {
+                if (replacementRoslynGeneration is long replacementGeneration
+                    && replacementGeneration > 0
+                    && replacementGeneration != _startupCompletionReadinessRoslynGeneration)
+                {
+                    generationReset = ResetStartupCompletionReadinessGenerationLocked(replacementGeneration);
+                }
+
+                if (_startupCompletionReadinessRoslynGeneration == reservation.Candidate.RoslynGeneration)
+                {
+                    switch (disposition)
+                    {
+                        case StartupCompletionWarmupDisposition.Satisfied:
+                            if (_startupCompletionReadinessState != StartupCompletionReadinessState.Satisfied)
+                            {
+                                _startupCompletionReadinessState = StartupCompletionReadinessState.Satisfied;
+                                _startupCompletionReadinessLatestCandidate = null;
+                                terminalSignal = _startupCompletionReadinessSignal;
+                                terminalResult = new StartupCompletionReadinessJoinResult(
+                                    StartupCompletionReadinessJoinOutcome.Satisfied,
+                                    reservation.Candidate.RoslynGeneration);
+                                goalSatisfied = true;
+                            }
+                            break;
+
+                        case StartupCompletionWarmupDisposition.SeedUnavailable:
+                        case StartupCompletionWarmupDisposition.EnvironmentChanged:
+                            if (IsStartupCompletionReadinessUnresolvedLocked())
+                            {
+                                _startupCompletionReadinessState = StartupCompletionReadinessState.NotStarted;
+                                if (_startupCompletionReadinessLatestCandidate is not StartupCompletionReadinessCandidate latest
+                                    || latest.Equals(reservation.Candidate))
+                                {
+                                    _startupCompletionReadinessLatestCandidate = null;
+                                }
+
+                                if (_startupCompletionReadinessLatestCandidate is not null)
+                                {
+                                    nextReservation = TryReserveStartupCompletionWarmupLocked();
+                                    rearmReason = disposition == StartupCompletionWarmupDisposition.SeedUnavailable
+                                        ? "SeedUnavailableLatestCandidate"
+                                        : "EnvironmentChangedLatestCandidate";
+                                }
+                            }
+                            break;
+
+                        case StartupCompletionWarmupDisposition.ForegroundPreempted:
+                            if (IsStartupCompletionReadinessUnresolvedLocked())
+                            {
+                                _startupCompletionReadinessState = StartupCompletionReadinessState.NotStarted;
+                                if (_startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction)
+                                {
+                                    terminalSignal = RotateStartupCompletionReadinessSignalLocked();
+                                    terminalResult = new StartupCompletionReadinessJoinResult(
+                                        StartupCompletionReadinessJoinOutcome.Unavailable,
+                                        reservation.Candidate.RoslynGeneration);
+                                    _startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction = false;
+                                }
+                            }
+                            break;
+
+                        case StartupCompletionWarmupDisposition.Degraded:
+                            if (IsStartupCompletionReadinessUnresolvedLocked())
+                            {
+                                _startupCompletionReadinessState = StartupCompletionReadinessState.Degraded;
+                                _startupCompletionReadinessLatestCandidate = null;
+                                terminalSignal = _startupCompletionReadinessSignal;
+                                terminalResult = new StartupCompletionReadinessJoinResult(
+                                    StartupCompletionReadinessJoinOutcome.Degraded,
+                                    reservation.Candidate.RoslynGeneration);
+                                goalDegraded = true;
+                            }
+                            break;
+
+                        case StartupCompletionWarmupDisposition.GenerationChanged:
+                        case StartupCompletionWarmupDisposition.Shutdown:
+                            break;
+
+                        default:
+                            throw new InvalidOperationException("unknown startup completion warm-up disposition.");
+                    }
+                }
+                else if (!_disposed
+                    && !_shuttingDown
+                    && IsStartupCompletionReadinessUnresolvedLocked()
+                    && _startupCompletionReadinessLatestCandidate is not null)
+                {
+                    nextReservation = TryReserveStartupCompletionWarmupLocked();
+                    rearmReason = "GenerationReplacement";
+                }
+            }
+        }
+
+        reservation.PreemptionSource.Dispose();
+        PublishStartupCompletionReadinessGenerationReset(generationReset, "WarmupObservedGenerationChange");
+
+        bool overlayAdvancedDuringAttempt = latestObservedCandidate is StartupCompletionReadinessCandidate observedCandidate
+            && observedCandidate.RoslynOverlayRevision != reservation.Candidate.RoslynOverlayRevision;
+
+        if (fault is null)
+        {
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_attempt_completed",
+                new
+                {
+                    workloadOperationId,
+                    documentPath = reservation.Candidate.Request.DocumentPath,
+                    clientGeneration = reservation.Candidate.Request.ClientGeneration,
+                    clientVersion = reservation.Candidate.Request.ClientVersion,
+                    workspaceGeneration = reservation.Candidate.WorkspacePublicationIdentity.WorkspaceGeneration,
+                    workspacePublicationVersion = reservation.Candidate.WorkspacePublicationIdentity.PublicationVersion,
+                    roslynGeneration = reservation.Candidate.RoslynGeneration,
+                    roslynDocumentVersion = reservation.Candidate.RoslynLspVersion,
+                    roslynOverlayRevision = reservation.Candidate.RoslynOverlayRevision,
+                    seedClientVersion = reservation.Candidate.Request.ClientVersion,
+                    seedRoslynDocumentVersion = reservation.Candidate.RoslynLspVersion,
+                    seedRoslynOverlayRevision = reservation.Candidate.RoslynOverlayRevision,
+                    latestObservedClientVersion = latestObservedCandidate?.Request.ClientVersion,
+                    latestObservedRoslynDocumentVersion = latestObservedCandidate?.RoslynLspVersion,
+                    latestObservedRoslynOverlayRevision = latestObservedCandidate?.RoslynOverlayRevision,
+                    overlayAdvancedDuringAttempt,
+                    warmupOutcome,
+                    roslynOutcome,
+                    diagnosticCount,
+                    disposition = disposition.ToString(),
+                    durationMs,
+                });
+        }
+        else
+        {
+            _diagnosticLogging.WriteFault(
+                "completion_startup_readiness_attempt_fault",
+                fault,
+                new
+                {
+                    workloadOperationId,
+                    documentPath = reservation.Candidate.Request.DocumentPath,
+                    clientGeneration = reservation.Candidate.Request.ClientGeneration,
+                    clientVersion = reservation.Candidate.Request.ClientVersion,
+                    workspaceGeneration = reservation.Candidate.WorkspacePublicationIdentity.WorkspaceGeneration,
+                    workspacePublicationVersion = reservation.Candidate.WorkspacePublicationIdentity.PublicationVersion,
+                    roslynGeneration = reservation.Candidate.RoslynGeneration,
+                    roslynDocumentVersion = reservation.Candidate.RoslynLspVersion,
+                    roslynOverlayRevision = reservation.Candidate.RoslynOverlayRevision,
+                    seedClientVersion = reservation.Candidate.Request.ClientVersion,
+                    seedRoslynDocumentVersion = reservation.Candidate.RoslynLspVersion,
+                    seedRoslynOverlayRevision = reservation.Candidate.RoslynOverlayRevision,
+                    latestObservedClientVersion = latestObservedCandidate?.Request.ClientVersion,
+                    latestObservedRoslynDocumentVersion = latestObservedCandidate?.RoslynLspVersion,
+                    latestObservedRoslynOverlayRevision = latestObservedCandidate?.RoslynOverlayRevision,
+                    overlayAdvancedDuringAttempt,
+                    warmupOutcome,
+                    roslynOutcome,
+                    diagnosticCount,
+                    disposition = disposition.ToString(),
+                    durationMs,
+                });
+        }
+
+        if (terminalSignal is not null && terminalResult is StartupCompletionReadinessJoinResult result)
+            terminalSignal.TrySetResult(result);
+
+        if (goalSatisfied)
+        {
+            WriteStartupCompletionReadinessGoalEvent(
+                "completion_startup_readiness_goal_satisfied",
+                reservation.Candidate,
+                warmupOutcome,
+                workloadOperationId);
+        }
+        else if (goalDegraded)
+        {
+            WriteStartupCompletionReadinessGoalEvent(
+                "completion_startup_readiness_goal_degraded",
+                reservation.Candidate,
+                retirementSucceeded ? warmupOutcome : "RetirementFault",
+                workloadOperationId);
+        }
+
+        if (nextReservation is not null)
+        {
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_attempt_rearmed",
+                CreateStartupCompletionReadinessCandidateDetails(
+                    nextReservation.Candidate,
+                    rearmReason ?? "LatestCandidate"));
+            StartReservedStartupCompletionWarmup(nextReservation);
+        }
+    }
+
+    private long? BeginStartupCompletionForegroundSemanticReadiness(
+        DocumentSemanticReadinessRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (!TryGetCurrentSemanticRequestRoslynGeneration(request, out long foregroundRoslynGeneration))
+            return null;
+
+        CancellationTokenSource? preemptionSource = null;
+        StartupCompletionReadinessCandidate? activeCandidate = null;
+        lock (_sync)
+        {
+            if (_disposed || _shuttingDown)
+                return null;
+
+            _startupCompletionForegroundSemanticReadinessRoslynGeneration = foregroundRoslynGeneration;
+
+            if (_startupCompletionWarmupAttemptOwned
+                && _startupCompletionWarmupPreemptionSource is CancellationTokenSource activeSource
+                && !activeSource.IsCancellationRequested
+                && !_startupCompletionWarmupForegroundPreemptionRequested
+                && _startupCompletionWarmupActiveCandidate is StartupCompletionReadinessCandidate candidate
+                && candidate.RoslynGeneration == foregroundRoslynGeneration
+                && _startupCompletionReadinessRoslynGeneration == foregroundRoslynGeneration)
+            {
+                _startupCompletionWarmupForegroundPreemptionRequested = true;
+                _startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction = false;
+                preemptionSource = activeSource;
+                activeCandidate = candidate;
+            }
+        }
+
+        if (preemptionSource is not null && activeCandidate is StartupCompletionReadinessCandidate candidateToPreempt)
+        {
+            CancelNoThrow(preemptionSource);
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_foreground_preemption_requested",
+                CreateStartupCompletionReadinessCandidateDetails(candidateToPreempt, "ForegroundSemanticReady"));
+        }
+
+        return foregroundRoslynGeneration;
+    }
+
+    private void EndStartupCompletionForegroundSemanticReadiness(long? roslynGeneration)
+    {
+        if (roslynGeneration is not long generation)
+            return;
+
+        lock (_sync)
+        {
+            if (_startupCompletionForegroundSemanticReadinessRoslynGeneration == generation)
+                _startupCompletionForegroundSemanticReadinessRoslynGeneration = null;
+        }
+    }
+
+    private bool TryGetCurrentSemanticRequestRoslynGeneration(
+        DocumentSemanticReadinessRequest request,
+        out long roslynGeneration)
+    {
+        roslynGeneration = 0;
+        if (request.SchemaVersion != CodeServiceProtocol.SemanticReadinessSchemaVersion
+            || request.ClientGeneration <= 0
+            || request.EpochId == Guid.Empty
+            || request.ClientVersion <= 0
+            || string.IsNullOrWhiteSpace(request.DocumentPath))
+        {
+            return false;
+        }
+
+        if (!_workspaceHost.TryGetCurrentPublication(out WorkspacePublication publication))
+            return false;
+
+        DocumentIdentityCreationResult identityResult = DocumentIdentity.TryCreate(
+            request.DocumentPath,
+            publication.WorkspaceIdentity,
+            publication.ProjectSnapshot);
+        if (!identityResult.IsSuccess || !identityResult.IsCurrentWorkspaceSource)
+            return false;
+
+        DocumentIdentity identity = identityResult.Identity!;
+        if (!_documentSynchronizationHost.TryGetCurrentAuthority(out DocumentClientAuthority authority)
+            || authority.ClientGeneration != request.ClientGeneration
+            || authority.EpochId != request.EpochId
+            || !_documentSynchronizationHost.TryGetDocumentSnapshot(
+                identity.RelativePath,
+                publication.ProjectSnapshot,
+                out DocumentSynchronizationDocumentSnapshot snapshot)
+            || ValidateSynchronizedState(request, publication, snapshot) is not null
+            || !IsRoslynCorrelationCurrent(publication, snapshot))
+        {
+            return false;
+        }
+
+        roslynGeneration = snapshot.RoslynGeneration;
+        return roslynGeneration > 0;
+    }
+
+    private void ReleaseStartupCompletionReadinessWaitersAfterForegroundFailure(
+        long roslynGeneration,
+        string reason)
+    {
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? signal = null;
+        lock (_sync)
+        {
+            if (_disposed
+                || _shuttingDown
+                || _startupCompletionReadinessRoslynGeneration != roslynGeneration
+                || !IsStartupCompletionReadinessUnresolvedLocked())
             {
                 return;
             }
 
-            _firstDocumentSemanticWarmupForegroundPreemptionRequested = true;
-            preemptionSource = activeSource;
+            if (_startupCompletionWarmupAttemptOwned
+                && _startupCompletionWarmupActiveCandidate is StartupCompletionReadinessCandidate activeCandidate
+                && activeCandidate.RoslynGeneration == roslynGeneration)
+            {
+                _startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction = true;
+                return;
+            }
+
+            _startupCompletionReadinessState = StartupCompletionReadinessState.NotStarted;
+            signal = RotateStartupCompletionReadinessSignalLocked();
+            _startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction = false;
         }
 
-        CancelNoThrow(preemptionSource);
+        signal?.TrySetResult(new StartupCompletionReadinessJoinResult(
+            StartupCompletionReadinessJoinOutcome.Unavailable,
+            roslynGeneration));
         _diagnosticLogging.WriteEvent(
-            "completion_first_document_semantic_warmup_experiment_preemption_requested");
+            "completion_startup_readiness_foreground_unsatisfied",
+            new
+            {
+                reason,
+                roslynGeneration,
+                state = StartupCompletionReadinessState.NotStarted.ToString(),
+            });
     }
 
-    private bool IsFirstDocumentSemanticWarmupActiveLocked()
-        => _firstDocumentSemanticWarmupState is FirstDocumentSemanticWarmupState.Starting
-            or FirstDocumentSemanticWarmupState.Running;
+    private void MarkStartupCompletionReadinessSatisfiedByForegroundSemanticReady(
+        DocumentSemanticReadinessResult semanticResult,
+        long roslynGeneration)
+    {
+        StartupCompletionReadinessGenerationReset? generationReset;
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? signal = null;
+        bool stateChanged = false;
 
-    private void MarkFirstDocumentSemanticWarmupTerminal()
+        lock (_sync)
+        {
+            if (_disposed || _shuttingDown)
+                return;
+
+            generationReset = ResetStartupCompletionReadinessGenerationLocked(roslynGeneration);
+            if (_startupCompletionReadinessState != StartupCompletionReadinessState.Satisfied)
+            {
+                _startupCompletionReadinessState = StartupCompletionReadinessState.Satisfied;
+                _startupCompletionReadinessLatestCandidate = null;
+                _startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction = false;
+                signal = _startupCompletionReadinessSignal;
+                stateChanged = true;
+            }
+        }
+
+        PublishStartupCompletionReadinessGenerationReset(
+            generationReset,
+            "ForegroundSemanticReadyGenerationChanged");
+
+        signal?.TrySetResult(new StartupCompletionReadinessJoinResult(
+            StartupCompletionReadinessJoinOutcome.Satisfied,
+            roslynGeneration));
+
+        if (stateChanged)
+        {
+            WorkspacePublicationIdentity? publicationIdentity = semanticResult.WorkspacePublicationIdentity;
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_goal_satisfied",
+                new
+                {
+                    reason = "ForegroundSemanticReady",
+                    documentPath = semanticResult.DocumentPath,
+                    clientGeneration = semanticResult.ClientGeneration,
+                    clientVersion = semanticResult.AcceptedClientVersion,
+                    workspaceGeneration = publicationIdentity?.WorkspaceGeneration,
+                    workspacePublicationVersion = publicationIdentity?.PublicationVersion,
+                    roslynGeneration,
+                    roslynDocumentVersion = semanticResult.RoslynDocumentVersion,
+                    roslynOverlayRevision = semanticResult.RoslynOverlayRevision,
+                    semanticOutcome = semanticResult.Outcome.ToString(),
+                });
+        }
+    }
+
+    private StartupCompletionReadinessGenerationReset? ResetStartupCompletionReadinessGenerationLocked(
+        long roslynGeneration)
+    {
+        if (_startupCompletionReadinessRoslynGeneration == roslynGeneration)
+            return null;
+
+        long? previousGeneration = _startupCompletionReadinessRoslynGeneration;
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? previousSignal = _startupCompletionReadinessSignal;
+        CancellationTokenSource? preemptionSource = null;
+        if (_startupCompletionWarmupAttemptOwned
+            && _startupCompletionWarmupActiveCandidate is StartupCompletionReadinessCandidate activeCandidate
+            && activeCandidate.RoslynGeneration != roslynGeneration)
+        {
+            preemptionSource = _startupCompletionWarmupPreemptionSource;
+        }
+
+        _startupCompletionReadinessRoslynGeneration = roslynGeneration;
+        _startupCompletionReadinessState = StartupCompletionReadinessState.NotStarted;
+        _startupCompletionReadinessLatestCandidate = null;
+        _startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction = false;
+        _startupCompletionReadinessSignal = CreateStartupCompletionReadinessSignal();
+
+        return new StartupCompletionReadinessGenerationReset(
+            previousGeneration,
+            roslynGeneration,
+            previousSignal,
+            preemptionSource,
+            _startupCompletionReadinessState);
+    }
+
+    private void PublishStartupCompletionReadinessGenerationReset(
+        StartupCompletionReadinessGenerationReset? reset,
+        string reason)
+    {
+        if (reset is not StartupCompletionReadinessGenerationReset value)
+            return;
+
+        if (value.PreviousSignal is not null && value.PreviousRoslynGeneration is long previousGeneration)
+        {
+            value.PreviousSignal.TrySetResult(new StartupCompletionReadinessJoinResult(
+                StartupCompletionReadinessJoinOutcome.GenerationChanged,
+                previousGeneration));
+        }
+
+        CancelNoThrow(value.PreemptionSource);
+
+        if (value.PreviousRoslynGeneration is not null)
+        {
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_generation_reset",
+                new
+                {
+                    reason,
+                    previousRoslynGeneration = value.PreviousRoslynGeneration,
+                    roslynGeneration = value.NewRoslynGeneration,
+                    state = value.NewState.ToString(),
+                });
+        }
+    }
+
+    private TaskCompletionSource<StartupCompletionReadinessJoinResult>? RotateStartupCompletionReadinessSignalLocked()
+    {
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? previousSignal = _startupCompletionReadinessSignal;
+        _startupCompletionReadinessSignal = CreateStartupCompletionReadinessSignal();
+        return previousSignal;
+    }
+
+    private static TaskCompletionSource<StartupCompletionReadinessJoinResult> CreateStartupCompletionReadinessSignal()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private bool IsStartupCompletionReadinessShuttingDown()
     {
         lock (_sync)
         {
-            _firstDocumentSemanticWarmupState = FirstDocumentSemanticWarmupState.Terminal;
+            return _disposed || _shuttingDown;
         }
     }
 
-    private static object CreateWarmupCandidateDetails(
-        DocumentSnapshotOperationResult snapshotResult,
-        string reason)
+    private bool IsStartupCompletionReadinessUnresolvedLocked()
+        => _startupCompletionReadinessState is StartupCompletionReadinessState.NotStarted
+            or StartupCompletionReadinessState.Starting
+            or StartupCompletionReadinessState.Running;
+
+    private void ClearStartupCompletionWarmupAttemptLocked()
     {
-        WorkspacePublicationIdentity? publicationIdentity = snapshotResult.WorkspacePublicationIdentity;
-        return new
+        _startupCompletionWarmupAttemptOwned = false;
+        _startupCompletionWarmupActiveCandidate = null;
+        _startupCompletionWarmupTask = null;
+        _startupCompletionWarmupPreemptionSource = null;
+        _startupCompletionWarmupForegroundPreemptionRequested = false;
+        _startupCompletionWarmupShutdownCancellationRequested = false;
+    }
+
+    private void WriteStartupCompletionReadinessJoinCompleted(
+        StartupCompletionReadinessCandidate candidate,
+        string outcome,
+        long started)
+    {
+        _diagnosticLogging.WriteEvent(
+            "completion_startup_readiness_join_completed",
+            new
+            {
+                documentPath = candidate.Request.DocumentPath,
+                clientGeneration = candidate.Request.ClientGeneration,
+                clientVersion = candidate.Request.ClientVersion,
+                workspaceGeneration = candidate.WorkspacePublicationIdentity.WorkspaceGeneration,
+                workspacePublicationVersion = candidate.WorkspacePublicationIdentity.PublicationVersion,
+                roslynGeneration = candidate.RoslynGeneration,
+                roslynDocumentVersion = candidate.RoslynLspVersion,
+                roslynOverlayRevision = candidate.RoslynOverlayRevision,
+                outcome,
+                durationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds,
+            });
+    }
+
+    private static object CreateStartupCompletionReadinessCandidateDetails(
+        StartupCompletionReadinessCandidate candidate,
+        string reason)
+        => new
         {
             reason,
-            documentPath = snapshotResult.DocumentPath,
-            clientGeneration = snapshotResult.ClientGeneration,
-            clientVersion = snapshotResult.AcceptedClientVersion,
-            workspaceGeneration = publicationIdentity?.WorkspaceGeneration,
-            workspacePublicationVersion = publicationIdentity?.PublicationVersion,
-            roslynGeneration = snapshotResult.RoslynGeneration,
-            roslynDocumentVersion = snapshotResult.RoslynDocumentVersion,
+            documentPath = candidate.Request.DocumentPath,
+            clientGeneration = candidate.Request.ClientGeneration,
+            clientVersion = candidate.Request.ClientVersion,
+            workspaceGeneration = candidate.WorkspacePublicationIdentity.WorkspaceGeneration,
+            workspacePublicationVersion = candidate.WorkspacePublicationIdentity.PublicationVersion,
+            roslynGeneration = candidate.RoslynGeneration,
+            roslynDocumentVersion = candidate.RoslynLspVersion,
+            roslynOverlayRevision = candidate.RoslynOverlayRevision,
         };
+
+    private static object CreateStartupCompletionReadinessAttemptDetails(
+        StartupCompletionReadinessCandidate candidate,
+        long workloadOperationId,
+        string reason)
+        => new
+        {
+            workloadOperationId,
+            reason,
+            documentPath = candidate.Request.DocumentPath,
+            clientGeneration = candidate.Request.ClientGeneration,
+            clientVersion = candidate.Request.ClientVersion,
+            workspaceGeneration = candidate.WorkspacePublicationIdentity.WorkspaceGeneration,
+            workspacePublicationVersion = candidate.WorkspacePublicationIdentity.PublicationVersion,
+            roslynGeneration = candidate.RoslynGeneration,
+            roslynDocumentVersion = candidate.RoslynLspVersion,
+            roslynOverlayRevision = candidate.RoslynOverlayRevision,
+            seedClientVersion = candidate.Request.ClientVersion,
+            seedRoslynDocumentVersion = candidate.RoslynLspVersion,
+            seedRoslynOverlayRevision = candidate.RoslynOverlayRevision,
+        };
+
+    private static object CreateStartupCompletionReadinessDiagnosticDetails(
+        StartupCompletionReadinessCandidate candidate,
+        long workloadOperationId,
+        RoslynDocumentDiagnosticScope diagnosticScope,
+        string roslynOutcome,
+        int? diagnosticCount,
+        double? durationMs)
+        => new
+        {
+            workloadOperationId,
+            documentPath = candidate.Request.DocumentPath,
+            workspaceGeneration = candidate.WorkspacePublicationIdentity.WorkspaceGeneration,
+            workspacePublicationVersion = candidate.WorkspacePublicationIdentity.PublicationVersion,
+            roslynGeneration = candidate.RoslynGeneration,
+            seedClientVersion = candidate.Request.ClientVersion,
+            seedRoslynDocumentVersion = candidate.RoslynLspVersion,
+            seedRoslynOverlayRevision = candidate.RoslynOverlayRevision,
+            diagnosticScope = diagnosticScope.ToString(),
+            diagnosticIdentifier = RoslynLanguageServerConstants.GetDocumentDiagnosticIdentifier(diagnosticScope),
+            roslynOutcome,
+            diagnosticCount,
+            durationMs,
+        };
+
+    private void WriteStartupCompletionReadinessGoalEvent(
+        string eventName,
+        StartupCompletionReadinessCandidate candidate,
+        string reason,
+        long? workloadOperationId)
+    {
+        _diagnosticLogging.WriteEvent(
+            eventName,
+            new
+            {
+                workloadOperationId,
+                reason,
+                documentPath = candidate.Request.DocumentPath,
+                clientGeneration = candidate.Request.ClientGeneration,
+                clientVersion = candidate.Request.ClientVersion,
+                workspaceGeneration = candidate.WorkspacePublicationIdentity.WorkspaceGeneration,
+                workspacePublicationVersion = candidate.WorkspacePublicationIdentity.PublicationVersion,
+                roslynGeneration = candidate.RoslynGeneration,
+                roslynDocumentVersion = candidate.RoslynLspVersion,
+                roslynOverlayRevision = candidate.RoslynOverlayRevision,
+            });
+    }
+
+    private readonly record struct StartupCompletionReadinessAdoption(
+        Task<StartupCompletionReadinessJoinResult>? WaitTask,
+        StartupCompletionReadinessJoinResult? ImmediateResult);
+
+    private readonly record struct StartupCompletionGenerationWarmupResult(
+        StartupCompletionGenerationWarmupOutcome Outcome,
+        RoslynSemanticReadinessOutcome? RoslynOutcome,
+        int? DiagnosticCount);
+
+    private sealed record StartupCompletionWarmupReservation(
+        StartupCompletionReadinessCandidate Candidate,
+        CancellationTokenSource PreemptionSource);
+
+    private readonly record struct StartupCompletionReadinessGenerationReset(
+        long? PreviousRoslynGeneration,
+        long NewRoslynGeneration,
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? PreviousSignal,
+        CancellationTokenSource? PreemptionSource,
+        StartupCompletionReadinessState NewState);
+
+    private enum StartupCompletionWarmupDisposition
+    {
+        Satisfied,
+        SeedUnavailable,
+        EnvironmentChanged,
+        ForegroundPreempted,
+        GenerationChanged,
+        Degraded,
+        Shutdown,
+    }
+
+    private enum StartupCompletionGenerationWarmupOutcome
+    {
+        Success,
+        SeedUnavailable,
+        EnvironmentChanged,
+        SemanticUnavailable,
+        RoslynUnavailable,
     }
 
     private static void CancelNoThrow(CancellationTokenSource? cancellationSource)
@@ -786,14 +2011,6 @@ internal sealed class DocumentSemanticReadinessHost : IDisposable
             diagnosticCount,
             outcome,
         });
-    }
-
-    private enum FirstDocumentSemanticWarmupState
-    {
-        NotStarted,
-        Starting,
-        Running,
-        Terminal,
     }
 
     private sealed class SemanticReadinessTimingState

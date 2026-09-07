@@ -16,6 +16,7 @@ internal static class RoslynProjectLoadFaultKinds
     public const string DocumentSynchronizationFailed = "DocumentSynchronizationFailed";
     public const string SemanticReadinessFailed = "SemanticReadinessFailed";
     public const string CompletionFailed = "CompletionFailed";
+    public const string CompletionResolveFailed = "CompletionResolveFailed";
 }
 
 internal sealed class RoslynProjectLoadTarget

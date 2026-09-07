@@ -9,7 +9,8 @@ internal static class CodeServiceProtocol
     public const int WorkspaceSchemaVersion = 1;
     public const int DocumentSynchronizationSchemaVersion = 1;
     public const int SemanticReadinessSchemaVersion = 1;
-    public const int CompletionSchemaVersion = 4;
+    public const int CompletionSchemaVersion = 5;
+    public const int CompletionResolveSchemaVersion = 1;
     public const string HandshakePath = "/control/handshake";
     public const string WorkspaceInitializePath = "/workspace/initialize";
     public const string WorkspaceStatusPath = "/workspace/status";
@@ -17,6 +18,7 @@ internal static class CodeServiceProtocol
     public const string DocumentSnapshotPath = "/documents/snapshot";
     public const string DocumentSemanticReadyPath = "/documents/semantic-ready";
     public const string CompletionPath = "/completion";
+    public const string CompletionResolvePath = "/completion/resolve";
     public const string HandshakeSuccessOutcome = "Success";
     public const string HandshakeInvalidRequestOutcome = "InvalidRequest";
     public const string HandshakeVersionMismatchOutcome = "VersionMismatch";
@@ -45,6 +47,7 @@ internal static class CodeServiceProtocol
     public const string SemanticUnavailableOutcome = "SemanticUnavailable";
     public const string DocumentNotSynchronizedOutcome = "DocumentNotSynchronized";
     public const string CompletionUnavailableOutcome = "CompletionUnavailable";
+    public const string CompletionExpiredOutcome = "CompletionExpired";
     public const string ProtocolVersionHeaderName = "X-SystemExplorer-Protocol-Version";
     public const string SessionIdHeaderName = "X-SystemExplorer-Session-Id";
     public const string RequestIdHeaderName = "X-SystemExplorer-Request-Id";

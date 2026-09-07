@@ -118,6 +118,46 @@ internal readonly record struct RoslynCompletionResult(
         RoslynProcessIdentity? processIdentity = null,
         RoslynCompletionTiming timing = default)
         => new(outcome, [], false, 0, roslynGeneration, processIdentity, timing);
+
+    public static RoslynCompletionResult FailureObserved(
+        RoslynCompletionOutcome outcome,
+        int rawItemCount,
+        long roslynGeneration,
+        RoslynProcessIdentity? processIdentity,
+        RoslynCompletionTiming timing)
+        => new(outcome, [], false, rawItemCount, roslynGeneration, processIdentity, timing);
+}
+
+internal enum RoslynCompletionResolveOutcome
+{
+    Success,
+    CompletionExpired,
+    CompletionUnavailable,
+    RoslynUnavailable,
+    Stale,
+}
+
+internal readonly record struct RoslynCompletionResolveTiming(
+    double? SenderCaptureDurationMs,
+    double? ResolveClientTotalDurationMs,
+    double? ResolveRpcDurationMs,
+    double? ResolveNormalizationDurationMs,
+    double? PostRpcGenerationValidationDurationMs,
+    double? HostTotalDurationMs);
+
+internal readonly record struct RoslynCompletionResolveResult(
+    RoslynCompletionResolveOutcome Outcome,
+    DocumentCompletionTextEdit? Edit,
+    long RoslynGeneration,
+    RoslynProcessIdentity? ProcessIdentity,
+    RoslynCompletionResolveTiming Timing)
+{
+    public static RoslynCompletionResolveResult Failure(
+        RoslynCompletionResolveOutcome outcome,
+        long roslynGeneration,
+        RoslynProcessIdentity? processIdentity = null,
+        RoslynCompletionResolveTiming timing = default)
+        => new(outcome, null, roslynGeneration, processIdentity, timing);
 }
 
 internal sealed class RoslynLanguageServerHost : IAsyncDisposable
@@ -354,6 +394,7 @@ internal sealed class RoslynLanguageServerHost : IAsyncDisposable
         WorkspacePublicationIdentity expectedPublicationIdentity,
         long expectedRoslynGeneration,
         DocumentIdentity documentIdentity,
+        RoslynDocumentDiagnosticScope diagnosticScope,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(expectedWorkspaceIdentity);
@@ -405,6 +446,7 @@ internal sealed class RoslynLanguageServerHost : IAsyncDisposable
         {
             pullResult = await client.PullDocumentDiagnosticsAsync(
                 absolutePath,
+                diagnosticScope,
                 cancellationToken,
                 diagnosticsEnabled).ConfigureAwait(false);
         }
@@ -614,8 +656,9 @@ internal sealed class RoslynLanguageServerHost : IAsyncDisposable
 
         if (clientResult.Outcome != RoslynCompletionClientOutcome.Success)
         {
-            return RoslynCompletionResult.Failure(
+            return RoslynCompletionResult.FailureObserved(
                 RoslynCompletionOutcome.CompletionUnavailable,
+                clientResult.RawItemCount,
                 expectedRoslynGeneration,
                 processIdentity,
                 CreateCompletionTiming(
@@ -640,8 +683,9 @@ internal sealed class RoslynLanguageServerHost : IAsyncDisposable
                 || !ReferenceEquals(process, currentProcess)
                 || !SameProcessIdentity(processIdentity, currentProcessIdentity))
             {
-                return RoslynCompletionResult.Failure(
+                return RoslynCompletionResult.FailureObserved(
                     RoslynCompletionOutcome.Stale,
+                    clientResult.RawItemCount,
                     expectedRoslynGeneration,
                     processIdentity,
                     CreateCompletionTiming(
@@ -668,6 +712,174 @@ internal sealed class RoslynLanguageServerHost : IAsyncDisposable
             expectedRoslynGeneration,
             processIdentity,
             timing);
+    }
+
+    public async Task<RoslynCompletionResolveResult> ResolveImportCompletionAsync(
+        WorkspaceIdentity expectedWorkspaceIdentity,
+        WorkspacePublicationIdentity expectedPublicationIdentity,
+        long expectedRoslynGeneration,
+        DocumentIdentity documentIdentity,
+        RoslynCompletionResolvePayload payload,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expectedWorkspaceIdentity);
+        ArgumentNullException.ThrowIfNull(documentIdentity);
+        ArgumentNullException.ThrowIfNull(payload);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        bool diagnosticsEnabled = _diagnosticLogging.IsEnabled;
+        long hostStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
+        long senderCaptureStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
+        RoslynLspClient client;
+        RoslynLanguageServerProcess process;
+        RoslynProcessIdentity processIdentity;
+
+        lock (_sync)
+        {
+            if (!TryCaptureCurrentDocumentSenderLocked(
+                    expectedWorkspaceIdentity,
+                    expectedPublicationIdentity,
+                    expectedRoslynGeneration,
+                    out client,
+                    out process,
+                    out processIdentity))
+            {
+                return RoslynCompletionResolveResult.Failure(
+                    RoslynCompletionResolveOutcome.RoslynUnavailable,
+                    expectedRoslynGeneration,
+                    timing: CreateCompletionResolveTiming(
+                        diagnosticsEnabled,
+                        hostStarted,
+                        GetElapsedMilliseconds(diagnosticsEnabled, senderCaptureStarted),
+                        default,
+                        null));
+            }
+        }
+
+        if (!client.IsCompletionCapabilityAvailable)
+        {
+            return RoslynCompletionResolveResult.Failure(
+                RoslynCompletionResolveOutcome.CompletionUnavailable,
+                expectedRoslynGeneration,
+                processIdentity,
+                CreateCompletionResolveTiming(
+                    diagnosticsEnabled,
+                    hostStarted,
+                    GetElapsedMilliseconds(diagnosticsEnabled, senderCaptureStarted),
+                    default,
+                    null));
+        }
+
+        double? senderCaptureDurationMs = GetElapsedMilliseconds(diagnosticsEnabled, senderCaptureStarted);
+        RoslynCompletionResolveClientResult clientResult;
+        try
+        {
+            clientResult = await client.ResolveImportCompletionAsync(
+                payload,
+                cancellationToken,
+                diagnosticsEnabled).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            if (IsGenerationBreakingCompletionFailure(exception, process))
+            {
+                FailCurrentGenerationForDocumentSend(
+                    expectedPublicationIdentity,
+                    expectedRoslynGeneration,
+                    processIdentity,
+                    process,
+                    client,
+                    "completionResolve",
+                    documentIdentity.RelativePath,
+                    exception,
+                    RoslynProjectLoadFaultKinds.CompletionResolveFailed);
+                return RoslynCompletionResolveResult.Failure(
+                    RoslynCompletionResolveOutcome.RoslynUnavailable,
+                    expectedRoslynGeneration,
+                    processIdentity,
+                    CreateCompletionResolveTiming(
+                        diagnosticsEnabled,
+                        hostStarted,
+                        senderCaptureDurationMs,
+                        default,
+                        null));
+            }
+
+            WriteCompletionResolveRequestLocalFailure(
+                exception,
+                expectedPublicationIdentity,
+                expectedRoslynGeneration,
+                processIdentity,
+                documentIdentity.RelativePath);
+            return RoslynCompletionResolveResult.Failure(
+                RoslynCompletionResolveOutcome.CompletionUnavailable,
+                expectedRoslynGeneration,
+                processIdentity,
+                CreateCompletionResolveTiming(
+                    diagnosticsEnabled,
+                    hostStarted,
+                    senderCaptureDurationMs,
+                    default,
+                    null));
+        }
+
+        long postRpcValidationStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
+        lock (_sync)
+        {
+            if (!TryCaptureCurrentDocumentSenderLocked(
+                    expectedWorkspaceIdentity,
+                    expectedPublicationIdentity,
+                    expectedRoslynGeneration,
+                    out RoslynLspClient currentClient,
+                    out RoslynLanguageServerProcess currentProcess,
+                    out RoslynProcessIdentity currentProcessIdentity)
+                || !ReferenceEquals(client, currentClient)
+                || !ReferenceEquals(process, currentProcess)
+                || !SameProcessIdentity(processIdentity, currentProcessIdentity))
+            {
+                return RoslynCompletionResolveResult.Failure(
+                    RoslynCompletionResolveOutcome.Stale,
+                    expectedRoslynGeneration,
+                    processIdentity,
+                    CreateCompletionResolveTiming(
+                        diagnosticsEnabled,
+                        hostStarted,
+                        senderCaptureDurationMs,
+                        clientResult.Timing,
+                        GetElapsedMilliseconds(diagnosticsEnabled, postRpcValidationStarted)));
+            }
+        }
+
+        RoslynCompletionResolveTiming timing = CreateCompletionResolveTiming(
+            diagnosticsEnabled,
+            hostStarted,
+            senderCaptureDurationMs,
+            clientResult.Timing,
+            GetElapsedMilliseconds(diagnosticsEnabled, postRpcValidationStarted));
+
+        return clientResult.Outcome switch
+        {
+            RoslynCompletionResolveClientOutcome.Success when clientResult.Edit is not null => new RoslynCompletionResolveResult(
+                RoslynCompletionResolveOutcome.Success,
+                clientResult.Edit,
+                expectedRoslynGeneration,
+                processIdentity,
+                timing),
+            RoslynCompletionResolveClientOutcome.CompletionExpired => RoslynCompletionResolveResult.Failure(
+                RoslynCompletionResolveOutcome.CompletionExpired,
+                expectedRoslynGeneration,
+                processIdentity,
+                timing),
+            _ => RoslynCompletionResolveResult.Failure(
+                RoslynCompletionResolveOutcome.CompletionUnavailable,
+                expectedRoslynGeneration,
+                processIdentity,
+                timing),
+        };
     }
 
     private static RoslynDocumentSendTiming CreateDocumentSendTiming(
@@ -719,6 +931,20 @@ internal sealed class RoslynLanguageServerHost : IAsyncDisposable
             postRpcGenerationValidationDurationMs,
             GetElapsedMilliseconds(diagnosticsEnabled, hostStarted));
 
+    private static RoslynCompletionResolveTiming CreateCompletionResolveTiming(
+        bool diagnosticsEnabled,
+        long hostStarted,
+        double? senderCaptureDurationMs,
+        RoslynCompletionResolveClientTiming clientTiming,
+        double? postRpcGenerationValidationDurationMs)
+        => new(
+            senderCaptureDurationMs,
+            clientTiming.TotalDurationMs,
+            clientTiming.RpcDurationMs,
+            clientTiming.NormalizationDurationMs,
+            postRpcGenerationValidationDurationMs,
+            GetElapsedMilliseconds(diagnosticsEnabled, hostStarted));
+
     private static double? GetElapsedMilliseconds(bool diagnosticsEnabled, long started)
         => diagnosticsEnabled
             ? Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds
@@ -756,6 +982,32 @@ internal sealed class RoslynLanguageServerHost : IAsyncDisposable
         else
         {
             _diagnosticLogging.WriteEvent("roslyn_completion_request_local_failure");
+        }
+    }
+
+    private void WriteCompletionResolveRequestLocalFailure(
+        Exception exception,
+        WorkspacePublicationIdentity publicationIdentity,
+        long roslynGeneration,
+        RoslynProcessIdentity processIdentity,
+        string documentPath)
+    {
+        if (_diagnosticLogging.IsEnabled)
+        {
+            _diagnosticLogging.WriteEvent("roslyn_completion_resolve_request_local_failure", new
+            {
+                workspaceGeneration = publicationIdentity.WorkspaceGeneration,
+                workspacePublicationVersion = publicationIdentity.PublicationVersion,
+                roslynGeneration,
+                processId = processIdentity.ProcessId,
+                processStartTimeUtcTicks = processIdentity.StartTimeUtcTicks,
+                documentPath = BoundDiagnosticText(documentPath),
+                errorType = BoundDiagnosticText(exception.GetType().FullName ?? exception.GetType().Name),
+            });
+        }
+        else
+        {
+            _diagnosticLogging.WriteEvent("roslyn_completion_resolve_request_local_failure");
         }
     }
 

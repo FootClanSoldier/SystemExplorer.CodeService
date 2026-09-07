@@ -169,7 +169,8 @@ internal sealed class WorkloadCoordinator : IAsyncDisposable
             and not WorkloadLane.DocumentSynchronization
             and not WorkloadLane.SemanticReadiness
             and not WorkloadLane.Completion
-            and not WorkloadLane.SemanticWarmup)
+            and not WorkloadLane.SemanticWarmup
+            and not WorkloadLane.CompletionResolveWarmup)
         {
             throw new ArgumentOutOfRangeException(nameof(lane), lane, "unknown workload lane.");
         }
@@ -183,30 +184,42 @@ internal sealed class WorkloadCoordinator : IAsyncDisposable
             (WorkloadLane.WorkspaceConstruction, WorkloadLane.SemanticReadiness) => true,
             (WorkloadLane.WorkspaceConstruction, WorkloadLane.Completion) => true,
             (WorkloadLane.WorkspaceConstruction, WorkloadLane.SemanticWarmup) => true,
+            (WorkloadLane.WorkspaceConstruction, WorkloadLane.CompletionResolveWarmup) => true,
 
             (WorkloadLane.DocumentSynchronization, WorkloadLane.WorkspaceConstruction) => true,
             (WorkloadLane.DocumentSynchronization, WorkloadLane.DocumentSynchronization) => true,
             (WorkloadLane.DocumentSynchronization, WorkloadLane.SemanticReadiness) => false,
             (WorkloadLane.DocumentSynchronization, WorkloadLane.Completion) => false,
             (WorkloadLane.DocumentSynchronization, WorkloadLane.SemanticWarmup) => false,
+            (WorkloadLane.DocumentSynchronization, WorkloadLane.CompletionResolveWarmup) => false,
 
             (WorkloadLane.SemanticReadiness, WorkloadLane.WorkspaceConstruction) => true,
             (WorkloadLane.SemanticReadiness, WorkloadLane.DocumentSynchronization) => false,
             (WorkloadLane.SemanticReadiness, WorkloadLane.SemanticReadiness) => true,
             (WorkloadLane.SemanticReadiness, WorkloadLane.Completion) => true,
             (WorkloadLane.SemanticReadiness, WorkloadLane.SemanticWarmup) => false,
+            (WorkloadLane.SemanticReadiness, WorkloadLane.CompletionResolveWarmup) => false,
 
             (WorkloadLane.Completion, WorkloadLane.WorkspaceConstruction) => true,
             (WorkloadLane.Completion, WorkloadLane.DocumentSynchronization) => false,
             (WorkloadLane.Completion, WorkloadLane.SemanticReadiness) => true,
             (WorkloadLane.Completion, WorkloadLane.Completion) => true,
             (WorkloadLane.Completion, WorkloadLane.SemanticWarmup) => false,
+            (WorkloadLane.Completion, WorkloadLane.CompletionResolveWarmup) => false,
 
             (WorkloadLane.SemanticWarmup, WorkloadLane.WorkspaceConstruction) => true,
             (WorkloadLane.SemanticWarmup, WorkloadLane.DocumentSynchronization) => false,
             (WorkloadLane.SemanticWarmup, WorkloadLane.SemanticReadiness) => false,
             (WorkloadLane.SemanticWarmup, WorkloadLane.Completion) => false,
             (WorkloadLane.SemanticWarmup, WorkloadLane.SemanticWarmup) => true,
+            (WorkloadLane.SemanticWarmup, WorkloadLane.CompletionResolveWarmup) => false,
+
+            (WorkloadLane.CompletionResolveWarmup, WorkloadLane.WorkspaceConstruction) => true,
+            (WorkloadLane.CompletionResolveWarmup, WorkloadLane.DocumentSynchronization) => false,
+            (WorkloadLane.CompletionResolveWarmup, WorkloadLane.SemanticReadiness) => false,
+            (WorkloadLane.CompletionResolveWarmup, WorkloadLane.Completion) => false,
+            (WorkloadLane.CompletionResolveWarmup, WorkloadLane.SemanticWarmup) => false,
+            (WorkloadLane.CompletionResolveWarmup, WorkloadLane.CompletionResolveWarmup) => true,
             _ => throw new InvalidOperationException("unknown workload-lane conflict pair."),
         };
 
@@ -225,6 +238,7 @@ internal enum WorkloadLane
     SemanticReadiness,
     Completion,
     SemanticWarmup,
+    CompletionResolveWarmup,
 }
 
 internal enum WorkloadAdmissionStatus

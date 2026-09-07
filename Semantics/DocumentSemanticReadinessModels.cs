@@ -61,3 +61,31 @@ internal readonly record struct DocumentSemanticReadinessResult(
             snapshot?.RoslynLspVersion,
             snapshot?.RoslynOverlayRevision);
 }
+
+internal enum StartupCompletionReadinessState
+{
+    NotStarted,
+    Starting,
+    Running,
+    Satisfied,
+    Degraded,
+}
+
+internal enum StartupCompletionReadinessJoinOutcome
+{
+    Satisfied,
+    Degraded,
+    GenerationChanged,
+    Unavailable,
+}
+
+internal readonly record struct StartupCompletionReadinessJoinResult(
+    StartupCompletionReadinessJoinOutcome Outcome,
+    long RoslynGeneration);
+
+internal sealed record StartupCompletionReadinessCandidate(
+    DocumentSemanticReadinessRequest Request,
+    WorkspacePublicationIdentity WorkspacePublicationIdentity,
+    long RoslynGeneration,
+    int RoslynLspVersion,
+    long RoslynOverlayRevision);

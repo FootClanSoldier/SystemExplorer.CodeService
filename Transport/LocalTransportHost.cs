@@ -348,6 +348,15 @@ internal sealed class LocalTransportHost : IAsyncDisposable
 
             if (string.Equals(
                     requestPath,
+                    CodeServiceProtocol.CompletionResolvePath,
+                    StringComparison.Ordinal))
+            {
+                await HandleCompletionResolveAsync(context).ConfigureAwait(false);
+                return;
+            }
+
+            if (string.Equals(
+                    requestPath,
                     CodeServiceProtocol.CompletionPath,
                     StringComparison.Ordinal))
             {
@@ -870,7 +879,7 @@ internal sealed class LocalTransportHost : IAsyncDisposable
 
         if (completedSnapshotResult is DocumentSnapshotOperationResult snapshotResult)
         {
-            _documentSemanticReadinessHost.ObserveFirstDocumentForSemanticWarmup(snapshotResult);
+            _documentSemanticReadinessHost.ObserveDocumentForStartupCompletionReadiness(snapshotResult);
         }
     }
 
@@ -1001,6 +1010,16 @@ internal sealed class LocalTransportHost : IAsyncDisposable
             lease.Retire();
         }
 
+        if (responseCompleted
+            && completedResult is DocumentCompletionResult publishedResult
+            && string.Equals(
+                responseTiming.FinalOutcome,
+                CodeServiceProtocol.DocumentSuccessOutcome,
+                StringComparison.Ordinal))
+        {
+            _documentCompletionHost.ObservePublishedCompletionForImportResolveWarmup(publishedResult);
+        }
+
         if (diagnosticsEnabled && responseCompleted && completedResult is not null)
         {
             return new CompletionTransportTimingLogDetails(
@@ -1023,6 +1042,247 @@ internal sealed class LocalTransportHost : IAsyncDisposable
         }
 
         return null;
+    }
+
+    private async Task HandleCompletionResolveAsync(HttpContext context)
+    {
+        if (!HttpMethods.IsPost(context.Request.Method))
+        {
+            await CompleteZeroBodyResponseAsync(context, StatusCodes.Status405MethodNotAllowed).ConfigureAwait(false);
+            return;
+        }
+        if (!TryAuthenticate(context.Request))
+        {
+            await CompleteZeroBodyResponseAsync(context, StatusCodes.Status401Unauthorized).ConfigureAwait(false);
+            return;
+        }
+
+        WorkspaceRequestHeaderValidationResult headerValidation = ValidateWorkspaceRequestHeaders(context.Request);
+        if (!headerValidation.IsSuccess)
+        {
+            DocumentCompletionResolveOutcome outcome = headerValidation.FailureKind == WorkspaceRequestHeaderFailureKind.VersionMismatch
+                ? DocumentCompletionResolveOutcome.VersionMismatch
+                : DocumentCompletionResolveOutcome.InvalidRequest;
+            _documentCompletionHost.RecordResolveTransportRejection(outcome);
+            await CompleteBoundedCompletionResolveResponseAsync(
+                context,
+                headerValidation.RequestId,
+                DocumentCompletionResolveResult.Failure(outcome)).ConfigureAwait(false);
+            return;
+        }
+
+        TrySetEndpointRequestBodyLimit(context, DocumentCompletionLimits.MaxCompletionResolveRequestBodySizeBytes);
+        CompletionResolveBodyParseResult bodyResult = await TryReadCompletionResolveBodyAsync(
+            context.Request,
+            context.RequestAborted).ConfigureAwait(false);
+        if (!bodyResult.IsSuccess || bodyResult.Request is not DocumentCompletionResolveRequest request)
+        {
+            DocumentCompletionResolveOutcome outcome = bodyResult.FailureKind == DocumentRequestBodyFailureKind.VersionMismatch
+                ? DocumentCompletionResolveOutcome.VersionMismatch
+                : DocumentCompletionResolveOutcome.InvalidRequest;
+            _documentCompletionHost.RecordResolveTransportRejection(outcome, bodyResult.Request);
+            await CompleteBoundedCompletionResolveResponseAsync(
+                context,
+                headerValidation.RequestId,
+                DocumentCompletionResolveResult.Failure(outcome, bodyResult.Request)).ConfigureAwait(false);
+            return;
+        }
+
+        WorkloadAdmissionResult admission = _documentCompletionHost.TryAdmitTransportOperation();
+        if (admission.Status != WorkloadAdmissionStatus.Admitted || admission.Lease is not WorkloadExecutionLease lease)
+        {
+            DocumentCompletionResolveOutcome outcome = admission.Status == WorkloadAdmissionStatus.Busy
+                ? DocumentCompletionResolveOutcome.Busy
+                : DocumentCompletionResolveOutcome.Unavailable;
+            _documentCompletionHost.RecordResolveTransportRejection(outcome, request);
+            await CompleteBoundedCompletionResolveResponseAsync(
+                context,
+                headerValidation.RequestId,
+                DocumentCompletionResolveResult.Failure(outcome, request)).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            using CancellationTokenSource linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                context.RequestAborted,
+                lease.ServiceWorkShutdownToken);
+            DocumentCompletionResolveResult result;
+            try
+            {
+                result = await _documentCompletionHost.ResolveAsync(
+                    request,
+                    lease,
+                    linkedCancellation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (
+                lease.ServiceWorkShutdownToken.IsCancellationRequested
+                && !context.RequestAborted.IsCancellationRequested)
+            {
+                result = DocumentCompletionResolveResult.Failure(
+                    DocumentCompletionResolveOutcome.Unavailable,
+                    request);
+            }
+
+            await CompleteBoundedCompletionResolveResponseAsync(
+                context,
+                headerValidation.RequestId,
+                result).ConfigureAwait(false);
+        }
+        finally
+        {
+            lease.Retire();
+        }
+    }
+
+    private static async Task<CompletionResolveBodyParseResult> TryReadCompletionResolveBodyAsync(
+        HttpRequest request,
+        CancellationToken cancellationToken)
+    {
+        BoundedBodyReadResult readResult = await TryReadBoundedBodyAsync(
+            request,
+            DocumentCompletionLimits.MaxCompletionResolveRequestBodySizeBytes,
+            cancellationToken).ConfigureAwait(false);
+        if (readResult.TooLarge || readResult.Body is null)
+        {
+            return CompletionResolveBodyParseResult.Invalid();
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(
+                readResult.Body,
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    MaxDepth = 8,
+                });
+
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return CompletionResolveBodyParseResult.Invalid();
+            }
+
+            int schemaVersionCount = 0;
+            int clientGenerationCount = 0;
+            int epochIdCount = 0;
+            int documentPathCount = 0;
+            int clientVersionCount = 0;
+            int completionHandleCount = 0;
+            int schemaVersion = 0;
+            long clientGeneration = 0;
+            Guid epochId = default;
+            string? documentPath = null;
+            long clientVersion = 0;
+            Guid completionHandle = default;
+
+            foreach (JsonProperty property in root.EnumerateObject())
+            {
+                switch (property.Name)
+                {
+                    case "schemaVersion":
+                        schemaVersionCount++;
+                        if (schemaVersionCount != 1
+                            || property.Value.ValueKind != JsonValueKind.Number
+                            || !property.Value.TryGetInt32(out schemaVersion))
+                        {
+                            return CompletionResolveBodyParseResult.Invalid();
+                        }
+                        break;
+
+                    case "clientGeneration":
+                        clientGenerationCount++;
+                        if (clientGenerationCount != 1
+                            || property.Value.ValueKind != JsonValueKind.Number
+                            || !property.Value.TryGetInt64(out clientGeneration)
+                            || clientGeneration <= 0)
+                        {
+                            return CompletionResolveBodyParseResult.Invalid();
+                        }
+                        break;
+
+                    case "epochId":
+                        epochIdCount++;
+                        if (epochIdCount != 1
+                            || property.Value.ValueKind != JsonValueKind.String
+                            || !TryGetCanonicalGuid(property.Value.GetString(), out epochId)
+                            || epochId == Guid.Empty)
+                        {
+                            return CompletionResolveBodyParseResult.Invalid();
+                        }
+                        break;
+
+                    case "documentPath":
+                        documentPathCount++;
+                        if (documentPathCount != 1
+                            || property.Value.ValueKind != JsonValueKind.String)
+                        {
+                            return CompletionResolveBodyParseResult.Invalid();
+                        }
+                        documentPath = property.Value.GetString();
+                        if (string.IsNullOrWhiteSpace(documentPath)
+                            || documentPath.Length > DocumentSynchronizationLimits.MaxDocumentPathLength)
+                        {
+                            return CompletionResolveBodyParseResult.Invalid();
+                        }
+                        break;
+
+                    case "clientVersion":
+                        clientVersionCount++;
+                        if (clientVersionCount != 1
+                            || property.Value.ValueKind != JsonValueKind.Number
+                            || !property.Value.TryGetInt64(out clientVersion)
+                            || clientVersion <= 0)
+                        {
+                            return CompletionResolveBodyParseResult.Invalid();
+                        }
+                        break;
+
+                    case "completionHandle":
+                        completionHandleCount++;
+                        if (completionHandleCount != 1
+                            || property.Value.ValueKind != JsonValueKind.String
+                            || !TryGetCanonicalGuid(property.Value.GetString(), out completionHandle)
+                            || completionHandle == Guid.Empty)
+                        {
+                            return CompletionResolveBodyParseResult.Invalid();
+                        }
+                        break;
+
+                    default:
+                        return CompletionResolveBodyParseResult.Invalid();
+                }
+            }
+
+            if (schemaVersionCount != 1
+                || clientGenerationCount != 1
+                || epochIdCount != 1
+                || documentPathCount != 1
+                || clientVersionCount != 1
+                || completionHandleCount != 1
+                || documentPath is null)
+            {
+                return CompletionResolveBodyParseResult.Invalid();
+            }
+
+            DocumentCompletionResolveRequest requestValue = new(
+                schemaVersion,
+                clientGeneration,
+                epochId,
+                documentPath,
+                clientVersion,
+                completionHandle);
+
+            return schemaVersion == CodeServiceProtocol.CompletionResolveSchemaVersion
+                ? CompletionResolveBodyParseResult.Success(requestValue)
+                : CompletionResolveBodyParseResult.VersionMismatch(requestValue);
+        }
+        catch (JsonException)
+        {
+            return CompletionResolveBodyParseResult.Invalid();
+        }
     }
 
     private static async Task<CompletionBodyParseResult> TryReadCompletionBodyAsync(
@@ -2133,7 +2393,9 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                 item.SortText,
                 item.Preselect,
                 CompletionSemanticOriginWire.ToWireValue(item.SemanticOrigin),
-                item.InheritanceDepth))
+                item.InheritanceDepth,
+                item.RequiresImport,
+                item.CompletionHandle?.ToString("D")))
             .ToArray();
 
         return new DocumentCompletionResponse(
@@ -2180,6 +2442,104 @@ internal sealed class LocalTransportHost : IAsyncDisposable
         DocumentCompletionOutcome.VersionMismatch or DocumentCompletionOutcome.StaleEpoch or DocumentCompletionOutcome.EpochConflict
             or DocumentCompletionOutcome.StaleVersion or DocumentCompletionOutcome.DocumentNotSynchronized
             or DocumentCompletionOutcome.DocumentNotOpen or DocumentCompletionOutcome.DocumentNotInWorkspace => StatusCodes.Status409Conflict,
+        _ => StatusCodes.Status503ServiceUnavailable,
+    };
+
+    private static async Task CompleteBoundedCompletionResolveResponseAsync(
+        HttpContext context,
+        string? requestId,
+        DocumentCompletionResolveResult result)
+    {
+        DocumentCompletionResolveResponse response = CreateCompletionResolveResponse(requestId, result);
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(response);
+        int statusCode = GetCompletionResolveStatusCode(result.Outcome);
+
+        if (json.Length > DocumentCompletionLimits.MaxCompletionResolveResponseBodySizeBytes)
+        {
+            WorkspacePublicationIdentity? publication = result.WorkspacePublicationIdentity;
+            response = new DocumentCompletionResolveResponse(
+                CodeServiceProtocol.CompletionResolveSchemaVersion,
+                CodeServiceProtocol.CompletionUnavailableOutcome,
+                requestId,
+                result.ClientGeneration,
+                result.EpochId?.ToString("D"),
+                result.DocumentPath,
+                result.AcceptedClientVersion,
+                publication?.WorkspaceGeneration,
+                publication?.PublicationVersion,
+                result.RoslynGeneration,
+                result.RoslynDocumentVersion,
+                result.RoslynOverlayRevision,
+                Edits: []);
+            json = JsonSerializer.SerializeToUtf8Bytes(response);
+            statusCode = StatusCodes.Status503ServiceUnavailable;
+        }
+
+        context.Response.StatusCode = statusCode;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        context.Response.ContentLength = json.Length;
+        await context.Response.Body.WriteAsync(json, context.RequestAborted).ConfigureAwait(false);
+        await context.Response.CompleteAsync().ConfigureAwait(false);
+    }
+
+    private static DocumentCompletionResolveResponse CreateCompletionResolveResponse(
+        string? requestId,
+        DocumentCompletionResolveResult result)
+    {
+        WorkspacePublicationIdentity? publication = result.WorkspacePublicationIdentity;
+        DocumentCompletionResolveResponseEdit[] edits = result.Edits
+            .Select(static edit => new DocumentCompletionResolveResponseEdit(
+                new DocumentCompletionResolveResponseRange(
+                    new DocumentCompletionResolveResponsePosition(edit.Range.Start.Line, edit.Range.Start.Character),
+                    new DocumentCompletionResolveResponsePosition(edit.Range.End.Line, edit.Range.End.Character)),
+                edit.NewText))
+            .ToArray();
+
+        return new DocumentCompletionResolveResponse(
+            CodeServiceProtocol.CompletionResolveSchemaVersion,
+            GetCompletionResolveOutcome(result.Outcome),
+            requestId,
+            result.ClientGeneration,
+            result.EpochId?.ToString("D"),
+            result.DocumentPath,
+            result.AcceptedClientVersion,
+            publication?.WorkspaceGeneration,
+            publication?.PublicationVersion,
+            result.RoslynGeneration,
+            result.RoslynDocumentVersion,
+            result.RoslynOverlayRevision,
+            edits);
+    }
+
+    private static string GetCompletionResolveOutcome(DocumentCompletionResolveOutcome outcome) => outcome switch
+    {
+        DocumentCompletionResolveOutcome.Success => CodeServiceProtocol.DocumentSuccessOutcome,
+        DocumentCompletionResolveOutcome.InvalidRequest => CodeServiceProtocol.DocumentInvalidRequestOutcome,
+        DocumentCompletionResolveOutcome.VersionMismatch => CodeServiceProtocol.DocumentVersionMismatchOutcome,
+        DocumentCompletionResolveOutcome.Busy => CodeServiceProtocol.DocumentBusyOutcome,
+        DocumentCompletionResolveOutcome.WorkspaceUnavailable => CodeServiceProtocol.DocumentWorkspaceUnavailableOutcome,
+        DocumentCompletionResolveOutcome.RoslynUnavailable => CodeServiceProtocol.DocumentRoslynUnavailableOutcome,
+        DocumentCompletionResolveOutcome.CompletionUnavailable => CodeServiceProtocol.CompletionUnavailableOutcome,
+        DocumentCompletionResolveOutcome.CompletionExpired => CodeServiceProtocol.CompletionExpiredOutcome,
+        DocumentCompletionResolveOutcome.StaleEpoch => CodeServiceProtocol.DocumentStaleEpochOutcome,
+        DocumentCompletionResolveOutcome.EpochConflict => CodeServiceProtocol.DocumentEpochConflictOutcome,
+        DocumentCompletionResolveOutcome.StaleVersion => CodeServiceProtocol.DocumentStaleVersionOutcome,
+        DocumentCompletionResolveOutcome.DocumentNotSynchronized => CodeServiceProtocol.DocumentNotSynchronizedOutcome,
+        DocumentCompletionResolveOutcome.DocumentNotOpen => CodeServiceProtocol.DocumentNotOpenOutcome,
+        DocumentCompletionResolveOutcome.DocumentNotInWorkspace => CodeServiceProtocol.DocumentNotInWorkspaceOutcome,
+        DocumentCompletionResolveOutcome.Unavailable => CodeServiceProtocol.DocumentUnavailableOutcome,
+        _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome, "unknown document completion resolve outcome."),
+    };
+
+    private static int GetCompletionResolveStatusCode(DocumentCompletionResolveOutcome outcome) => outcome switch
+    {
+        DocumentCompletionResolveOutcome.Success => StatusCodes.Status200OK,
+        DocumentCompletionResolveOutcome.InvalidRequest => StatusCodes.Status400BadRequest,
+        DocumentCompletionResolveOutcome.VersionMismatch or DocumentCompletionResolveOutcome.CompletionExpired
+            or DocumentCompletionResolveOutcome.StaleEpoch or DocumentCompletionResolveOutcome.EpochConflict
+            or DocumentCompletionResolveOutcome.StaleVersion or DocumentCompletionResolveOutcome.DocumentNotSynchronized
+            or DocumentCompletionResolveOutcome.DocumentNotOpen or DocumentCompletionResolveOutcome.DocumentNotInWorkspace
+            => StatusCodes.Status409Conflict,
         _ => StatusCodes.Status503ServiceUnavailable,
     };
 
@@ -2604,6 +2964,22 @@ internal readonly record struct CompletionBodyParseResult(
         => new(DocumentRequestBodyFailureKind.InvalidRequest, null);
 
     public static CompletionBodyParseResult VersionMismatch(DocumentCompletionRequest request)
+        => new(DocumentRequestBodyFailureKind.VersionMismatch, request);
+}
+
+internal readonly record struct CompletionResolveBodyParseResult(
+    DocumentRequestBodyFailureKind FailureKind,
+    DocumentCompletionResolveRequest? Request)
+{
+    public bool IsSuccess => FailureKind == DocumentRequestBodyFailureKind.None && Request is not null;
+
+    public static CompletionResolveBodyParseResult Success(DocumentCompletionResolveRequest request)
+        => new(DocumentRequestBodyFailureKind.None, request);
+
+    public static CompletionResolveBodyParseResult Invalid()
+        => new(DocumentRequestBodyFailureKind.InvalidRequest, null);
+
+    public static CompletionResolveBodyParseResult VersionMismatch(DocumentCompletionResolveRequest request)
         => new(DocumentRequestBodyFailureKind.VersionMismatch, request);
 }
 

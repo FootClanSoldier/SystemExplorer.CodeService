@@ -14,6 +14,7 @@ internal sealed class CodeServiceHost : IAsyncDisposable
     private readonly LocalTransportHost _localTransportHost;
     private readonly BootstrapReadinessWriter _bootstrapReadinessWriter;
     private readonly WorkspaceIdentity? _startupWorkspaceIdentity;
+    private readonly StartupDocumentHint _startupDocumentHint;
     private readonly object _shutdownSync = new();
     private Task? _startupWorkspaceInitializationTask;
     private Task? _shutdownTask;
@@ -31,7 +32,8 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         DocumentCompletionHost documentCompletionHost,
         LocalTransportHost localTransportHost,
         BootstrapReadinessWriter bootstrapReadinessWriter,
-        WorkspaceIdentity? startupWorkspaceIdentity)
+        WorkspaceIdentity? startupWorkspaceIdentity,
+        StartupDocumentHint startupDocumentHint)
     {
         _godotProcessLifetime = godotProcessLifetime;
         _sessionCoordinator = sessionCoordinator;
@@ -45,6 +47,7 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         _localTransportHost = localTransportHost;
         _bootstrapReadinessWriter = bootstrapReadinessWriter;
         _startupWorkspaceIdentity = startupWorkspaceIdentity;
+        _startupDocumentHint = startupDocumentHint ?? throw new ArgumentNullException(nameof(startupDocumentHint));
     }
 
     public static async Task<CodeServiceHostCreationResult> TryCreateAsync(
@@ -88,6 +91,7 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         DiagnosticLogging diagnosticLogging = loggingResult.Logging;
 
         diagnosticLogging.WriteEvent("owner_validated");
+        WriteStartupDocumentHintDiagnostic(diagnosticLogging, startupOptions.StartupDocumentHint);
 
         RoslynLanguageServerRuntimeResolutionResult runtimeResolution =
             RoslynLanguageServerRuntimeResolver.Resolve(startupOptions.RoslynRuntime);
@@ -592,7 +596,8 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                     documentCompletionHost,
                     localTransportHost,
                     bootstrapReadinessWriter,
-                    startupOptions.StartupWorkspaceIdentity),
+                    startupOptions.StartupWorkspaceIdentity,
+                    startupOptions.StartupDocumentHint),
                 diagnosticLogging.LogPath,
                 loggingResult.WarningMessage);
         }
@@ -723,6 +728,33 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         }
     }
 
+    private static void WriteStartupDocumentHintDiagnostic(
+        DiagnosticLogging diagnosticLogging,
+        StartupDocumentHint startupDocumentHint)
+    {
+        ArgumentNullException.ThrowIfNull(diagnosticLogging);
+        ArgumentNullException.ThrowIfNull(startupDocumentHint);
+
+        if (startupDocumentHint.State == StartupDocumentHintState.Accepted)
+        {
+            diagnosticLogging.WriteEvent(
+                "startup_document_hint_accepted",
+                new
+                {
+                    documentPath = startupDocumentHint.DocumentPath,
+                });
+        }
+        else if (startupDocumentHint.State == StartupDocumentHintState.Rejected)
+        {
+            diagnosticLogging.WriteEvent(
+                "startup_document_hint_rejected",
+                new
+                {
+                    reason = startupDocumentHint.RejectionReason,
+                });
+        }
+    }
+
     private void TryStartStartupWorkspaceInitialization()
     {
         if (_startupWorkspaceIdentity is not WorkspaceIdentity workspaceIdentity)
@@ -752,8 +784,16 @@ internal sealed class CodeServiceHost : IAsyncDisposable
         try
         {
             WorkspaceInitializationResult result =
-                await _workspaceHost.InitializeFromStartupAsync(workspaceIdentity)
+                await _workspaceHost.InitializeFromStartupAsync(
+                        workspaceIdentity,
+                        _startupDocumentHint)
                     .ConfigureAwait(false);
+
+            if (result.StartupDocumentWarmupResult is StartupDocumentWarmupResult startupWarmupResult
+                && startupWarmupResult.Succeeded)
+            {
+                _documentSemanticReadinessHost.ObserveStartupDocumentWarmupSuccess(startupWarmupResult);
+            }
 
             _diagnosticLogging.WriteEvent(
                 "startup_workspace_initialization_completed",

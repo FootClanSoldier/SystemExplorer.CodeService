@@ -62,6 +62,84 @@ internal sealed class DocumentSemanticReadinessHost : IDisposable
         AdoptStartupCompletionReadinessCandidate(candidate, "Snapshot");
     }
 
+    internal void ObserveStartupDocumentWarmupSuccess(
+        StartupDocumentWarmupResult warmupResult)
+    {
+        if (!warmupResult.Succeeded)
+        {
+            return;
+        }
+
+        if (!_workspaceHost.TryGetCurrentPublication(out WorkspacePublication publication)
+            || publication.Identity != warmupResult.WorkspacePublicationIdentity
+            || publication.RoslynSnapshot.RoslynGeneration != warmupResult.RoslynGeneration
+            || !publication.RoslynSnapshot.IsProjectLoaded
+            || !_roslynLanguageServerHost.IsProjectLoadCurrentFor(
+                publication.WorkspaceIdentity,
+                publication.Identity,
+                publication.RoslynSnapshot))
+        {
+            return;
+        }
+
+        DocumentIdentityCreationResult identityResult = DocumentIdentity.TryCreate(
+            warmupResult.DocumentIdentity.RelativePath,
+            publication.WorkspaceIdentity,
+            publication.ProjectSnapshot);
+        if (!identityResult.IsSuccess || !identityResult.IsCurrentWorkspaceSource)
+        {
+            return;
+        }
+
+        StartupCompletionReadinessGenerationReset? generationReset;
+        TaskCompletionSource<StartupCompletionReadinessJoinResult>? signal = null;
+        bool stateChanged = false;
+
+        lock (_sync)
+        {
+            if (_disposed || _shuttingDown)
+            {
+                return;
+            }
+
+            generationReset = ResetStartupCompletionReadinessGenerationLocked(
+                warmupResult.RoslynGeneration);
+            if (_startupCompletionReadinessState != StartupCompletionReadinessState.Satisfied)
+            {
+                _startupCompletionReadinessState = StartupCompletionReadinessState.Satisfied;
+                _startupCompletionReadinessLatestCandidate = null;
+                _startupCompletionWarmupForegroundOperationCompletedWithoutSatisfaction = false;
+                signal = _startupCompletionReadinessSignal;
+                stateChanged = true;
+            }
+        }
+
+        PublishStartupCompletionReadinessGenerationReset(
+            generationReset,
+            "StartupDocumentWarmupGenerationChanged");
+
+        signal?.TrySetResult(new StartupCompletionReadinessJoinResult(
+            StartupCompletionReadinessJoinOutcome.Satisfied,
+            warmupResult.RoslynGeneration));
+
+        if (stateChanged)
+        {
+            _diagnosticLogging.WriteEvent(
+                "completion_startup_readiness_goal_satisfied",
+                new
+                {
+                    reason = "StartupDocumentWarmup",
+                    documentPath = warmupResult.DocumentIdentity.RelativePath,
+                    workspaceGeneration = warmupResult.WorkspacePublicationIdentity.WorkspaceGeneration,
+                    workspacePublicationVersion = warmupResult.WorkspacePublicationIdentity.PublicationVersion,
+                    roslynGeneration = warmupResult.RoslynGeneration,
+                    roslynDocumentVersion = warmupResult.RoslynLspVersion,
+                    roslynOverlayRevision = warmupResult.RoslynOverlayRevision,
+                    diagnosticCount = warmupResult.DiagnosticCount,
+                });
+        }
+    }
+
     internal async Task<StartupCompletionReadinessJoinResult> JoinStartupCompletionReadinessAsync(
         DocumentSemanticReadinessRequest request,
         WorkspacePublicationIdentity expectedPublicationIdentity,

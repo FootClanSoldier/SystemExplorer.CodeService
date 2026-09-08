@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace SystemExplorer.CodeService;
 
@@ -17,6 +18,7 @@ internal sealed class DocumentSynchronizationHost : IDisposable
     private long _totalTrackedSnapshotUtf8Bytes;
     private long _roslynOverlayRevision;
     private CancellationTokenSource? _roslynOverlayRevisionLifetimeSource = new();
+    private bool _startupDocumentSeedAttempted;
     private bool _shuttingDown;
     private bool _disposed;
 
@@ -44,6 +46,291 @@ internal sealed class DocumentSynchronizationHost : IDisposable
         }
 
         return _workloadCoordinator.TryAdmitExclusive(WorkloadLane.DocumentSynchronization);
+    }
+
+    internal async Task<StartupDocumentSeedResult> SeedStartupDocumentAsync(
+        string startupDocumentPath,
+        WorkspaceProjectSnapshot candidateSnapshot,
+        WorkspacePublicationIdentity candidatePublicationIdentity,
+        RoslynLanguageServerSnapshot roslynSnapshot,
+        WorkloadExecutionLease workspaceConstructionLease,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(startupDocumentPath);
+        ArgumentNullException.ThrowIfNull(candidateSnapshot);
+        ValidateWorkspaceConstructionLease(workspaceConstructionLease);
+
+        lock (_sync)
+        {
+            if (_disposed || _shuttingDown)
+            {
+                WriteStartupDocumentSeedSkipped("service_shutting_down");
+                return StartupDocumentSeedResult.Skipped(
+                    candidatePublicationIdentity,
+                    roslynSnapshot.RoslynGeneration,
+                    "service_shutting_down");
+            }
+
+            if (_startupDocumentSeedAttempted)
+            {
+                WriteStartupDocumentSeedSkipped("already_attempted");
+                return StartupDocumentSeedResult.Skipped(
+                    candidatePublicationIdentity,
+                    roslynSnapshot.RoslynGeneration,
+                    "already_attempted");
+            }
+
+            _startupDocumentSeedAttempted = true;
+
+            if (_authority is not null)
+            {
+                WriteStartupDocumentSeedSkipped("client_authority_already_present");
+                return StartupDocumentSeedResult.Skipped(
+                    candidatePublicationIdentity,
+                    roslynSnapshot.RoslynGeneration,
+                    "client_authority_already_present");
+            }
+        }
+
+        long started = Stopwatch.GetTimestamp();
+        _diagnosticLogging.WriteEvent("startup_document_seed_started");
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            WriteStartupDocumentSeedSkipped("service_shutting_down");
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        if (!roslynSnapshot.IsProjectLoaded
+            || !_roslynLanguageServerHost.IsProjectLoadCurrentFor(
+                candidateSnapshot.WorkspaceIdentity,
+                candidatePublicationIdentity,
+                roslynSnapshot))
+        {
+            return CompleteStartupDocumentSeedSkip(
+                candidatePublicationIdentity,
+                roslynSnapshot.RoslynGeneration,
+                "roslyn_unavailable",
+                started);
+        }
+
+        DocumentIdentityCreationResult identityResult = DocumentIdentity.TryCreate(
+            startupDocumentPath,
+            candidateSnapshot.WorkspaceIdentity,
+            candidateSnapshot);
+        if (!identityResult.IsSuccess)
+        {
+            return CompleteStartupDocumentSeedSkip(
+                candidatePublicationIdentity,
+                roslynSnapshot.RoslynGeneration,
+                "invalid_wire_path",
+                started);
+        }
+
+        DocumentIdentity identity = identityResult.Identity!;
+        string absolutePath;
+        FileAttributes attributes;
+        try
+        {
+            absolutePath = identity.GetAbsolutePath(candidateSnapshot.WorkspaceIdentity);
+            attributes = File.GetAttributes(absolutePath);
+        }
+        catch (FileNotFoundException)
+        {
+            return CompleteStartupDocumentSeedSkip(
+                candidatePublicationIdentity,
+                roslynSnapshot.RoslynGeneration,
+                "target_missing",
+                started);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return CompleteStartupDocumentSeedSkip(
+                candidatePublicationIdentity,
+                roslynSnapshot.RoslynGeneration,
+                "target_missing",
+                started);
+        }
+        catch (Exception exception) when (IsControlledStartupDocumentPathException(exception))
+        {
+            return CompleteStartupDocumentSeedSkip(
+                candidatePublicationIdentity,
+                roslynSnapshot.RoslynGeneration,
+                "read_failed",
+                started);
+        }
+
+        if ((attributes & FileAttributes.Directory) != 0)
+        {
+            return CompleteStartupDocumentSeedSkip(
+                candidatePublicationIdentity,
+                roslynSnapshot.RoslynGeneration,
+                "target_not_file",
+                started);
+        }
+
+        if (!identityResult.IsCurrentWorkspaceSource)
+        {
+            return CompleteStartupDocumentSeedSkip(
+                candidatePublicationIdentity,
+                roslynSnapshot.RoslynGeneration,
+                "document_not_in_workspace",
+                started);
+        }
+
+        StartupDocumentDiskReadResult readResult;
+        try
+        {
+            readResult = await ReadStartupDocumentTextAsync(
+                absolutePath,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            WriteStartupDocumentSeedSkipped("service_shutting_down");
+            throw;
+        }
+
+        if (!readResult.Succeeded)
+        {
+            return CompleteStartupDocumentSeedSkip(
+                candidatePublicationIdentity,
+                roslynSnapshot.RoslynGeneration,
+                readResult.FailureReason!,
+                started);
+        }
+
+        string text = readResult.Text!;
+        int textUtf8ByteCount = readResult.TextUtf8ByteCount;
+
+        lock (_sync)
+        {
+            if (_disposed || _shuttingDown)
+            {
+                return CompleteStartupDocumentSeedSkip(
+                    candidatePublicationIdentity,
+                    roslynSnapshot.RoslynGeneration,
+                    "service_shutting_down",
+                    started);
+            }
+
+            if (_authority is not null
+                || _declaredOpenDocuments.ContainsKey(identity.RelativePath)
+                || (_documents.TryGetValue(identity.RelativePath, out TrackedDocumentState? existingState)
+                    && existingState.HasCurrentAuthoritySnapshot))
+            {
+                return CompleteStartupDocumentSeedSkip(
+                    candidatePublicationIdentity,
+                    roslynSnapshot.RoslynGeneration,
+                    "client_authority_already_present",
+                    started);
+            }
+
+            long candidateTotalBytes = _totalTrackedSnapshotUtf8Bytes + textUtf8ByteCount;
+            if (candidateTotalBytes > DocumentSynchronizationLimits.MaxTotalTrackedSnapshotUtf8Bytes
+                || (!_documents.ContainsKey(identity.RelativePath)
+                    && _documents.Count >= DocumentSynchronizationLimits.MaxTrackedOpenDocuments))
+            {
+                return CompleteStartupDocumentSeedSkip(
+                    candidatePublicationIdentity,
+                    roslynSnapshot.RoslynGeneration,
+                    "capacity_exceeded",
+                    started);
+            }
+        }
+
+        const int startupRoslynLspVersion = 1;
+        RoslynDocumentSendResult sendResult = await _roslynLanguageServerHost.OpenDocumentAsync(
+            candidateSnapshot.WorkspaceIdentity,
+            candidatePublicationIdentity,
+            roslynSnapshot.RoslynGeneration,
+            identity,
+            startupRoslynLspVersion,
+            text,
+            cancellationToken).ConfigureAwait(false);
+
+        if (!sendResult.IsSuccess)
+        {
+            return CompleteStartupDocumentSeedSkip(
+                candidatePublicationIdentity,
+                roslynSnapshot.RoslynGeneration,
+                "roslyn_unavailable",
+                started);
+        }
+
+        CancellationTokenSource supersededOverlayLifetimeSource;
+        long committedRoslynOverlayRevision;
+        lock (_sync)
+        {
+            if (_disposed || _shuttingDown)
+            {
+                WriteStartupDocumentSeedSkipped("service_shutting_down");
+                return StartupDocumentSeedResult.Skipped(
+                    candidatePublicationIdentity,
+                    roslynSnapshot.RoslynGeneration,
+                    "service_shutting_down");
+            }
+
+            if (_authority is not null || _declaredOpenDocuments.ContainsKey(identity.RelativePath))
+            {
+                WriteStartupDocumentSeedSkipped("client_authority_already_present");
+                return StartupDocumentSeedResult.Skipped(
+                    candidatePublicationIdentity,
+                    roslynSnapshot.RoslynGeneration,
+                    "client_authority_already_present");
+            }
+
+            if (!_documents.TryGetValue(identity.RelativePath, out TrackedDocumentState? state))
+            {
+                state = new TrackedDocumentState(identity);
+                _documents.Add(identity.RelativePath, state);
+            }
+
+            long nextTotal = _totalTrackedSnapshotUtf8Bytes
+                - state.SnapshotUtf8ByteCount
+                + textUtf8ByteCount;
+            if (nextTotal > DocumentSynchronizationLimits.MaxTotalTrackedSnapshotUtf8Bytes)
+            {
+                throw new InvalidOperationException(
+                    "startup document snapshot memory bound changed before commit despite WorkspaceConstruction ownership.");
+            }
+
+            supersededOverlayLifetimeSource = AdvanceRoslynOverlayRevisionLocked();
+            _totalTrackedSnapshotUtf8Bytes = nextTotal;
+            state.Identity = identity;
+            state.LastAcceptedClientVersion = 0;
+            state.HasCurrentAuthoritySnapshot = false;
+            state.LastFullSnapshotText = text;
+            state.SnapshotUtf8ByteCount = textUtf8ByteCount;
+            state.IsOpenInRoslyn = true;
+            state.RoslynGeneration = roslynSnapshot.RoslynGeneration;
+            state.RoslynLspVersion = startupRoslynLspVersion;
+            state.LastWorkspacePublicationIdentity = candidatePublicationIdentity;
+            state.IsCurrentWorkspaceSource = true;
+            committedRoslynOverlayRevision = _roslynOverlayRevision;
+        }
+
+        CancelAndDisposeRoslynOverlayRevisionSourceNoThrow(supersededOverlayLifetimeSource);
+
+        _diagnosticLogging.WriteEvent(
+            "startup_document_seeded",
+            new
+            {
+                documentPath = identity.RelativePath,
+                roslynGeneration = roslynSnapshot.RoslynGeneration,
+                roslynLspVersion = startupRoslynLspVersion,
+                roslynOverlayRevision = committedRoslynOverlayRevision,
+                textUtf8ByteCount,
+                durationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds,
+            });
+
+        return StartupDocumentSeedResult.Success(
+            identity,
+            candidatePublicationIdentity,
+            roslynSnapshot.RoslynGeneration,
+            startupRoslynLspVersion,
+            committedRoslynOverlayRevision,
+            textUtf8ByteCount);
     }
 
     public async Task<DocumentEpochOperationResult> ReconcileEpochAsync(
@@ -1111,6 +1398,239 @@ internal sealed class DocumentSynchronizationHost : IDisposable
         }
 
         return count;
+    }
+
+    private StartupDocumentSeedResult CompleteStartupDocumentSeedSkip(
+        WorkspacePublicationIdentity candidatePublicationIdentity,
+        long roslynGeneration,
+        string reason,
+        long started)
+    {
+        _diagnosticLogging.WriteEvent(
+            "startup_document_seed_skipped",
+            new
+            {
+                reason,
+                durationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds,
+            });
+        return StartupDocumentSeedResult.Skipped(
+            candidatePublicationIdentity,
+            roslynGeneration,
+            reason);
+    }
+
+    private void WriteStartupDocumentSeedSkipped(string reason)
+        => _diagnosticLogging.WriteEvent(
+            "startup_document_seed_skipped",
+            new
+            {
+                reason,
+            });
+
+    private static async Task<StartupDocumentDiskReadResult> ReadStartupDocumentTextAsync(
+        string absolutePath,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using FileStream stream = new(
+                absolutePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 4096,
+                options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+            byte[] prefix = new byte[4];
+            int prefixLength = 0;
+            while (prefixLength < prefix.Length)
+            {
+                int read = await stream.ReadAsync(
+                    prefix.AsMemory(prefixLength, prefix.Length - prefixLength),
+                    cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                prefixLength += read;
+            }
+
+            StartupDocumentTextEncoding textEncoding = DetectStartupDocumentEncoding(
+                prefix.AsSpan(0, prefixLength));
+            long maxEncodedBytes = checked(
+                ((long)DocumentSynchronizationLimits.MaxDocumentTextUtf8Bytes
+                    * textEncoding.MaxEncodedBytesPerUtf8Byte)
+                + textEncoding.PreambleLength);
+            if (stream.Length > maxEncodedBytes)
+            {
+                return StartupDocumentDiskReadResult.Failure("document_too_large");
+            }
+
+            stream.Position = textEncoding.PreambleLength;
+            using StreamReader reader = new(
+                stream,
+                textEncoding.Encoding,
+                detectEncodingFromByteOrderMarks: false,
+                bufferSize: 4096,
+                leaveOpen: false);
+
+            StringBuilder builder = new();
+            char[] buffer = new char[4096];
+            while (true)
+            {
+                int charsRead = await reader.ReadAsync(
+                    buffer.AsMemory(),
+                    cancellationToken).ConfigureAwait(false);
+                if (charsRead == 0)
+                {
+                    break;
+                }
+
+                if (builder.Length > DocumentSynchronizationLimits.MaxDocumentTextUtf8Bytes - charsRead)
+                {
+                    return StartupDocumentDiskReadResult.Failure("document_too_large");
+                }
+
+                builder.Append(buffer, 0, charsRead);
+            }
+
+            string text = builder.ToString();
+            int textUtf8ByteCount;
+            try
+            {
+                textUtf8ByteCount = StrictUtf8Encoding.GetByteCount(text);
+            }
+            catch (EncoderFallbackException)
+            {
+                return StartupDocumentDiskReadResult.Failure("decode_failed");
+            }
+
+            if (textUtf8ByteCount > DocumentSynchronizationLimits.MaxDocumentTextUtf8Bytes)
+            {
+                return StartupDocumentDiskReadResult.Failure("document_too_large");
+            }
+
+            return StartupDocumentDiskReadResult.Success(text, textUtf8ByteCount);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (DecoderFallbackException)
+        {
+            return StartupDocumentDiskReadResult.Failure("decode_failed");
+        }
+        catch (FileNotFoundException)
+        {
+            return StartupDocumentDiskReadResult.Failure("target_missing");
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return StartupDocumentDiskReadResult.Failure("target_missing");
+        }
+        catch (Exception exception) when (IsControlledStartupDocumentReadException(exception))
+        {
+            return StartupDocumentDiskReadResult.Failure("read_failed");
+        }
+    }
+
+    private static StartupDocumentTextEncoding DetectStartupDocumentEncoding(ReadOnlySpan<byte> prefix)
+    {
+        if (prefix.Length >= 4
+            && prefix[0] == 0x00
+            && prefix[1] == 0x00
+            && prefix[2] == 0xFE
+            && prefix[3] == 0xFF)
+        {
+            return new StartupDocumentTextEncoding(
+                new UTF32Encoding(bigEndian: true, byteOrderMark: false, throwOnInvalidCharacters: true),
+                PreambleLength: 4,
+                MaxEncodedBytesPerUtf8Byte: 4);
+        }
+
+        if (prefix.Length >= 4
+            && prefix[0] == 0xFF
+            && prefix[1] == 0xFE
+            && prefix[2] == 0x00
+            && prefix[3] == 0x00)
+        {
+            return new StartupDocumentTextEncoding(
+                new UTF32Encoding(bigEndian: false, byteOrderMark: false, throwOnInvalidCharacters: true),
+                PreambleLength: 4,
+                MaxEncodedBytesPerUtf8Byte: 4);
+        }
+
+        if (prefix.Length >= 3
+            && prefix[0] == 0xEF
+            && prefix[1] == 0xBB
+            && prefix[2] == 0xBF)
+        {
+            return new StartupDocumentTextEncoding(
+                StrictUtf8Encoding,
+                PreambleLength: 3,
+                MaxEncodedBytesPerUtf8Byte: 1);
+        }
+
+        if (prefix.Length >= 2
+            && prefix[0] == 0xFE
+            && prefix[1] == 0xFF)
+        {
+            return new StartupDocumentTextEncoding(
+                new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true),
+                PreambleLength: 2,
+                MaxEncodedBytesPerUtf8Byte: 2);
+        }
+
+        if (prefix.Length >= 2
+            && prefix[0] == 0xFF
+            && prefix[1] == 0xFE)
+        {
+            return new StartupDocumentTextEncoding(
+                new UnicodeEncoding(bigEndian: false, byteOrderMark: false, throwOnInvalidBytes: true),
+                PreambleLength: 2,
+                MaxEncodedBytesPerUtf8Byte: 2);
+        }
+
+        return new StartupDocumentTextEncoding(
+            StrictUtf8Encoding,
+            PreambleLength: 0,
+            MaxEncodedBytesPerUtf8Byte: 1);
+    }
+
+    private static bool IsControlledStartupDocumentPathException(Exception exception)
+        => exception is ArgumentException
+            or NotSupportedException
+            or PathTooLongException
+            or IOException
+            or UnauthorizedAccessException;
+
+    private static bool IsControlledStartupDocumentReadException(Exception exception)
+        => exception is IOException
+            or UnauthorizedAccessException
+            or NotSupportedException
+            or ArgumentException;
+
+    private static readonly UTF8Encoding StrictUtf8Encoding = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+
+    private readonly record struct StartupDocumentTextEncoding(
+        Encoding Encoding,
+        int PreambleLength,
+        int MaxEncodedBytesPerUtf8Byte);
+
+    private readonly record struct StartupDocumentDiskReadResult(
+        bool Succeeded,
+        string? Text,
+        int TextUtf8ByteCount,
+        string? FailureReason)
+    {
+        public static StartupDocumentDiskReadResult Success(string text, int textUtf8ByteCount)
+            => new(true, text, textUtf8ByteCount, null);
+
+        public static StartupDocumentDiskReadResult Failure(string reason)
+            => new(false, null, 0, reason);
     }
 
     private static void ValidateDocumentTransportLease(WorkloadExecutionLease lease)

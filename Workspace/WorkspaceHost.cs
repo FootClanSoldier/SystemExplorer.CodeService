@@ -67,22 +67,27 @@ internal sealed class WorkspaceHost : IDisposable
 
         return InitializeCoreAsync(
             identityResult.Identity!,
-            WorkspaceInitializationSource.TransportRequest);
+            WorkspaceInitializationSource.TransportRequest,
+            StartupDocumentHint.NotSpecified);
     }
 
     internal Task<WorkspaceInitializationResult> InitializeFromStartupAsync(
-        WorkspaceIdentity workspaceIdentity)
+        WorkspaceIdentity workspaceIdentity,
+        StartupDocumentHint startupDocumentHint)
     {
         ArgumentNullException.ThrowIfNull(workspaceIdentity);
+        ArgumentNullException.ThrowIfNull(startupDocumentHint);
 
         return InitializeCoreAsync(
             workspaceIdentity,
-            WorkspaceInitializationSource.StartupProjectRoot);
+            WorkspaceInitializationSource.StartupProjectRoot,
+            startupDocumentHint);
     }
 
     private async Task<WorkspaceInitializationResult> InitializeCoreAsync(
         WorkspaceIdentity requestedIdentity,
-        WorkspaceInitializationSource initializationSource)
+        WorkspaceInitializationSource initializationSource,
+        StartupDocumentHint startupDocumentHint)
     {
         WorkloadExecutionLease lease;
         long workspaceGeneration;
@@ -187,6 +192,7 @@ internal sealed class WorkspaceHost : IDisposable
         double indexRoslynOverlapDurationMs = 0;
         double documentReplayDurationMs = 0;
         double publicationCommitDurationMs = 0;
+        StartupDocumentWarmupResult? startupDocumentWarmupResult = null;
         ProjectIndexOperationContext operationContext = new(
             operationTrigger,
             lease.OperationId,
@@ -333,6 +339,19 @@ internal sealed class WorkspaceHost : IDisposable
                     Stopwatch.GetTimestamp()).TotalMilliseconds;
             }
 
+            if (initializationSource == WorkspaceInitializationSource.StartupProjectRoot
+                && startupDocumentHint.IsAccepted
+                && startupDocumentHint.DocumentPath is string startupDocumentPath)
+            {
+                startupDocumentWarmupResult = await TryWarmStartupDocumentCompletionAsync(
+                    startupDocumentPath,
+                    candidateSnapshot,
+                    candidatePublicationIdentity,
+                    roslynResult.Snapshot,
+                    lease,
+                    lease.ServiceWorkShutdownToken).ConfigureAwait(false);
+            }
+
             long publicationCommitStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
             RoslynLanguageServerSnapshot finalRoslynSnapshot = _roslynLanguageServerHost.GetSnapshot();
             ValidateRoslynPublicationCorrelation(
@@ -420,7 +439,8 @@ internal sealed class WorkspaceHost : IDisposable
 
             return WorkspaceInitializationResult.Success(
                 readyStatus,
-                reusedExistingWorkspace: false);
+                reusedExistingWorkspace: false,
+                startupDocumentWarmupResult);
         }
         catch (OperationCanceledException)
             when (lease.ServiceWorkShutdownToken.IsCancellationRequested)
@@ -500,6 +520,138 @@ internal sealed class WorkspaceHost : IDisposable
             newlyStartedObserver?.Dispose();
             lease.Retire();
         }
+    }
+
+    private async Task<StartupDocumentWarmupResult?> TryWarmStartupDocumentCompletionAsync(
+        string startupDocumentPath,
+        WorkspaceProjectSnapshot candidateSnapshot,
+        WorkspacePublicationIdentity candidatePublicationIdentity,
+        RoslynLanguageServerSnapshot roslynSnapshot,
+        WorkloadExecutionLease workspaceConstructionLease,
+        CancellationToken cancellationToken)
+    {
+        StartupDocumentSeedResult seedResult;
+        try
+        {
+            seedResult = await _documentSynchronizationHost.SeedStartupDocumentAsync(
+                startupDocumentPath,
+                candidateSnapshot,
+                candidatePublicationIdentity,
+                roslynSnapshot,
+                workspaceConstructionLease,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            _diagnosticLogging.WriteEvent(
+                "startup_document_seed_skipped",
+                new
+                {
+                    reason = "roslyn_unavailable",
+                });
+            return null;
+        }
+
+        if (!seedResult.Succeeded || seedResult.DocumentIdentity is not DocumentIdentity documentIdentity)
+        {
+            return null;
+        }
+
+        RoslynDocumentDiagnosticScope diagnosticScope = RoslynDocumentDiagnosticScope.CompilerSemanticOnly;
+        long started = Stopwatch.GetTimestamp();
+        _diagnosticLogging.WriteEvent(
+            "startup_document_completion_warmup_started",
+            new
+            {
+                documentPath = documentIdentity.RelativePath,
+                roslynGeneration = seedResult.RoslynGeneration,
+                diagnosticScope = diagnosticScope.ToString(),
+                diagnosticIdentifier = RoslynLanguageServerConstants.GetDocumentDiagnosticIdentifier(diagnosticScope),
+            });
+
+        RoslynSemanticReadinessResult semanticResult;
+        try
+        {
+            semanticResult = await _roslynLanguageServerHost.EstablishSemanticReadinessAsync(
+                candidateSnapshot.WorkspaceIdentity,
+                candidatePublicationIdentity,
+                seedResult.RoslynGeneration,
+                documentIdentity,
+                diagnosticScope,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _diagnosticLogging.WriteEvent(
+                "startup_document_completion_warmup_completed",
+                new
+                {
+                    documentPath = documentIdentity.RelativePath,
+                    roslynGeneration = seedResult.RoslynGeneration,
+                    diagnosticScope = diagnosticScope.ToString(),
+                    diagnosticIdentifier = RoslynLanguageServerConstants.GetDocumentDiagnosticIdentifier(diagnosticScope),
+                    diagnosticCount = (int?)null,
+                    durationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds,
+                    outcome = "canceled",
+                });
+            throw;
+        }
+        catch (Exception)
+        {
+            _diagnosticLogging.WriteEvent(
+                "startup_document_completion_warmup_completed",
+                new
+                {
+                    documentPath = documentIdentity.RelativePath,
+                    roslynGeneration = seedResult.RoslynGeneration,
+                    diagnosticScope = diagnosticScope.ToString(),
+                    diagnosticIdentifier = RoslynLanguageServerConstants.GetDocumentDiagnosticIdentifier(diagnosticScope),
+                    diagnosticCount = (int?)null,
+                    durationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds,
+                    outcome = "semantic_unavailable",
+                });
+            return null;
+        }
+
+        string outcome = semanticResult.Outcome switch
+        {
+            RoslynSemanticReadinessOutcome.Success => "success",
+            RoslynSemanticReadinessOutcome.SemanticUnavailable => "semantic_unavailable",
+            RoslynSemanticReadinessOutcome.RoslynUnavailable => "roslyn_unavailable",
+            RoslynSemanticReadinessOutcome.Stale => "stale",
+            _ => "semantic_unavailable",
+        };
+
+        _diagnosticLogging.WriteEvent(
+            "startup_document_completion_warmup_completed",
+            new
+            {
+                documentPath = documentIdentity.RelativePath,
+                roslynGeneration = seedResult.RoslynGeneration,
+                diagnosticScope = diagnosticScope.ToString(),
+                diagnosticIdentifier = RoslynLanguageServerConstants.GetDocumentDiagnosticIdentifier(diagnosticScope),
+                diagnosticCount = semanticResult.DiagnosticCount,
+                durationMs = Stopwatch.GetElapsedTime(started, Stopwatch.GetTimestamp()).TotalMilliseconds,
+                outcome,
+            });
+
+        if (semanticResult.Outcome != RoslynSemanticReadinessOutcome.Success)
+        {
+            return null;
+        }
+
+        return new StartupDocumentWarmupResult(
+            true,
+            documentIdentity,
+            candidatePublicationIdentity,
+            seedResult.RoslynGeneration,
+            seedResult.RoslynLspVersion,
+            seedResult.RoslynOverlayRevision,
+            semanticResult.DiagnosticCount);
     }
 
     private static async Task<TimedOperationResult<TResult>> MeasureOperationAsync<TResult>(
@@ -1310,16 +1462,19 @@ internal readonly record struct WorkspaceInitializationResult(
     WorkspaceInitializationOutcome Outcome,
     WorkspaceStatusSnapshot Status,
     bool ReusedExistingWorkspace,
-    string? ErrorMessage)
+    string? ErrorMessage,
+    StartupDocumentWarmupResult? StartupDocumentWarmupResult)
 {
     public static WorkspaceInitializationResult Success(
         WorkspaceStatusSnapshot status,
-        bool reusedExistingWorkspace)
+        bool reusedExistingWorkspace,
+        StartupDocumentWarmupResult? startupDocumentWarmupResult = null)
         => new(
             WorkspaceInitializationOutcome.Success,
             status,
             reusedExistingWorkspace,
-            null);
+            null,
+            startupDocumentWarmupResult);
 
     public static WorkspaceInitializationResult InvalidRequest(
         WorkspaceStatusSnapshot status,
@@ -1328,19 +1483,20 @@ internal readonly record struct WorkspaceInitializationResult(
             WorkspaceInitializationOutcome.InvalidRequest,
             status,
             false,
-            errorMessage);
+            errorMessage,
+            null);
 
     public static WorkspaceInitializationResult Busy(WorkspaceStatusSnapshot status)
-        => new(WorkspaceInitializationOutcome.Busy, status, false, null);
+        => new(WorkspaceInitializationOutcome.Busy, status, false, null, null);
 
     public static WorkspaceInitializationResult WorkspaceMismatch(WorkspaceStatusSnapshot status)
-        => new(WorkspaceInitializationOutcome.WorkspaceMismatch, status, false, null);
+        => new(WorkspaceInitializationOutcome.WorkspaceMismatch, status, false, null, null);
 
     public static WorkspaceInitializationResult Unavailable(WorkspaceStatusSnapshot status)
-        => new(WorkspaceInitializationOutcome.Unavailable, status, false, null);
+        => new(WorkspaceInitializationOutcome.Unavailable, status, false, null, null);
 
     public static WorkspaceInitializationResult Faulted(WorkspaceStatusSnapshot status)
-        => new(WorkspaceInitializationOutcome.Faulted, status, false, null);
+        => new(WorkspaceInitializationOutcome.Faulted, status, false, null, null);
 }
 
 internal readonly record struct WorkspaceStatusSnapshot(

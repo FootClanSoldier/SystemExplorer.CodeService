@@ -15,19 +15,22 @@ internal sealed class CodeServiceStartupOptions
     private const string DiagnosticLogOption = "--diagnostic-log";
     private const string RoslynRuntimeOption = "--roslyn-runtime";
     private const string ProjectRootOption = "--project-root";
+    private const string StartupDocumentOption = "--startup-document";
 
     private CodeServiceStartupOptions(
         CodeServiceStartupMode mode,
         GodotProcessIdentity godotOwnerIdentity,
         bool diagnosticLoggingEnabled,
         RoslynLanguageServerRuntime? roslynRuntime,
-        WorkspaceIdentity? startupWorkspaceIdentity)
+        WorkspaceIdentity? startupWorkspaceIdentity,
+        StartupDocumentHint startupDocumentHint)
     {
         Mode = mode;
         GodotOwnerIdentity = godotOwnerIdentity;
         DiagnosticLoggingEnabled = diagnosticLoggingEnabled;
         RoslynRuntime = roslynRuntime;
         StartupWorkspaceIdentity = startupWorkspaceIdentity;
+        StartupDocumentHint = startupDocumentHint ?? throw new ArgumentNullException(nameof(startupDocumentHint));
     }
 
     public CodeServiceStartupMode Mode { get; }
@@ -39,6 +42,8 @@ internal sealed class CodeServiceStartupOptions
     public RoslynLanguageServerRuntime? RoslynRuntime { get; }
 
     public WorkspaceIdentity? StartupWorkspaceIdentity { get; }
+
+    public StartupDocumentHint StartupDocumentHint { get; }
 
     public static CodeServiceStartupOptionsParseResult TryParse(string[] args)
     {
@@ -61,6 +66,8 @@ internal sealed class CodeServiceStartupOptions
         bool roslynRuntimeSpecified = false;
         WorkspaceIdentity? startupWorkspaceIdentity = null;
         bool projectRootSpecified = false;
+        StartupDocumentHint startupDocumentHint = StartupDocumentHint.NotSpecified;
+        bool startupDocumentSpecified = false;
 
         int index = 1;
         while (index < args.Length)
@@ -201,6 +208,27 @@ internal sealed class CodeServiceStartupOptions
                     startupWorkspaceIdentity = workspaceIdentityResult.Identity;
                     break;
 
+                case StartupDocumentOption:
+                    if (startupDocumentSpecified)
+                    {
+                        return CodeServiceStartupOptionsParseResult.Failure(
+                            $"duplicate option '{StartupDocumentOption}'.");
+                    }
+
+                    startupDocumentSpecified = true;
+                    if (!TryReadOptionValue(
+                            args,
+                            ref index,
+                            option,
+                            out string startupDocument,
+                            out string? startupDocumentError))
+                    {
+                        return CodeServiceStartupOptionsParseResult.Failure(startupDocumentError!);
+                    }
+
+                    startupDocumentHint = StartupDocumentHint.Validate(startupDocument);
+                    break;
+
                 default:
                     return CodeServiceStartupOptionsParseResult.Failure(
                         $"unknown option '{option}'.");
@@ -221,6 +249,9 @@ internal sealed class CodeServiceStartupOptions
                 $"required option '{GodotStartTimeUtcTicksOption}' is missing.");
         }
 
+        startupDocumentHint = startupDocumentHint.RequireProjectRoot(
+            startupWorkspaceIdentity is not null);
+
         GodotProcessIdentity ownerIdentity = new(
             godotProcessId.Value,
             godotStartTimeUtcTicks.Value);
@@ -231,7 +262,8 @@ internal sealed class CodeServiceStartupOptions
                 ownerIdentity,
                 diagnosticLoggingEnabled,
                 roslynRuntime,
-                startupWorkspaceIdentity));
+                startupWorkspaceIdentity,
+                startupDocumentHint));
     }
 
     private static bool TryReadOptionValue(

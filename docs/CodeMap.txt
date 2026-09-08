@@ -1774,8 +1774,22 @@ Diagnostics/
 
     DiagnosticLogPathResolver.cs
         DiagnosticLogPathResolver
-            Existing per-user diagnostic path policy remains unchanged and separate
-            from session descriptor storage.
+            Resolves the service-owned per-user diagnostics directory separately from
+            session descriptor storage. The normal canonical layouts are:
+
+                Windows:
+                    %LOCALAPPDATA%\SystemExplorer\Diagnostics\CodeService\
+
+                Unix/XDG:
+                    $XDG_STATE_HOME/SystemExplorer/Diagnostics/CodeService/
+                    when XDG_STATE_HOME is fully qualified, otherwise
+                    ~/.local/state/SystemExplorer/Diagnostics/CodeService/
+
+                macOS:
+                    ~/Library/Logs/SystemExplorer/CodeService/
+
+            Application-data fallbacks use SystemExplorer/Diagnostics/CodeService;
+            normal macOS intentionally retains the OS-native Library/Logs hierarchy.
 
 SystemExplorer.CodeService.csproj
     Targets net10.0 and remains a .NET Tool.

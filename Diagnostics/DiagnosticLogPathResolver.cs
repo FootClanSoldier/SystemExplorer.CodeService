@@ -13,8 +13,8 @@ internal static class DiagnosticLogPathResolver
             return Path.Combine(
                 ResolveWindowsBaseDirectory(),
                 ApplicationDirectoryName,
-                ServiceDirectoryName,
-                DiagnosticsDirectoryName);
+                DiagnosticsDirectoryName,
+                ServiceDirectoryName);
         }
 
         if (OperatingSystem.IsMacOS())
@@ -33,8 +33,8 @@ internal static class DiagnosticLogPathResolver
             return Path.Combine(
                 ResolveApplicationDataFallback(),
                 ApplicationDirectoryName,
-                ServiceDirectoryName,
-                DiagnosticsDirectoryName);
+                DiagnosticsDirectoryName,
+                ServiceDirectoryName);
         }
 
         string? xdgStateHome = Environment.GetEnvironmentVariable("XDG_STATE_HOME");
@@ -43,8 +43,8 @@ internal static class DiagnosticLogPathResolver
             return Path.Combine(
                 xdgStateHome,
                 ApplicationDirectoryName,
-                ServiceDirectoryName,
-                DiagnosticsDirectoryName);
+                DiagnosticsDirectoryName,
+                ServiceDirectoryName);
         }
 
         string? unixUserProfile = TryGetSpecialFolder(Environment.SpecialFolder.UserProfile);
@@ -55,15 +55,15 @@ internal static class DiagnosticLogPathResolver
                 ".local",
                 "state",
                 ApplicationDirectoryName,
-                ServiceDirectoryName,
-                DiagnosticsDirectoryName);
+                DiagnosticsDirectoryName,
+                ServiceDirectoryName);
         }
 
         return Path.Combine(
             ResolveApplicationDataFallback(),
             ApplicationDirectoryName,
-            ServiceDirectoryName,
-            DiagnosticsDirectoryName);
+            DiagnosticsDirectoryName,
+            ServiceDirectoryName);
     }
 
     private static string ResolveWindowsBaseDirectory()

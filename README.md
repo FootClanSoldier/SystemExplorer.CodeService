@@ -1,5 +1,9 @@
-# SystemExplorer.CodeService
-
+<p align="center">
+  <a href="https://github.com/FootClanSoldier/SystemExplorer.CodeService">
+    <img src="icon.png" width="300" alt="System Explorer Logo">
+  </a>
+</p>
+<h1 align="center">SystemExplorer.CodeService</h1>
 SystemExplorer.CodeService is the standalone code-intelligence backend for the System Explorer Godot editor plugin. It runs outside the Godot process so workspace, indexing, and Roslyn-host lifetime can remain independent of editor/plugin reloads.
 
 ## Requirements and installation

@@ -3,7 +3,7 @@
     <img src="icon.png" width="300" alt="System Explorer Logo">
   </a>
 </p>
-<h1 align="center">SysemExplorer.CodeService</h1>
+<h1 align="center">SystemExplorer.CodeService</h1>
 
 > SystemExplorer.CodeService is currently in early development.
 >

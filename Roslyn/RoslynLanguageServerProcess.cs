@@ -15,6 +15,7 @@ internal readonly record struct RoslynProcessExitObservation(
 internal sealed class RoslynLanguageServerProcess : IAsyncDisposable
 {
     private readonly Process _process;
+    private readonly WindowsProcessJob? _windowsProcessJob;
     private readonly BoundedTextCapture _stderrCapture;
     private readonly CancellationTokenSource _stderrDrainCancellation = new();
     private readonly Task _stderrDrainTask;
@@ -26,10 +27,12 @@ internal sealed class RoslynLanguageServerProcess : IAsyncDisposable
 
     private RoslynLanguageServerProcess(
         Process process,
+        WindowsProcessJob? windowsProcessJob,
         RoslynProcessIdentity identity,
         Action<RoslynProcessExitObservation> exitObserver)
     {
         _process = process;
+        _windowsProcessJob = windowsProcessJob;
         Identity = identity;
         _exitObserver = exitObserver ?? throw new ArgumentNullException(nameof(exitObserver));
         _stderrCapture = new BoundedTextCapture(RoslynLanguageServerConstants.MaxCapturedStderrBytes);
@@ -69,14 +72,22 @@ internal sealed class RoslynLanguageServerProcess : IAsyncDisposable
             StartInfo = startInfo,
             EnableRaisingEvents = true,
         };
+        WindowsProcessJob? windowsProcessJob = null;
 
         try
         {
+            if (OperatingSystem.IsWindows())
+            {
+                windowsProcessJob = WindowsProcessJob.CreateKillOnClose();
+            }
+
             if (!process.Start())
             {
                 throw new InvalidOperationException(
                     "Process.Start returned false for Roslyn Language Server.");
             }
+
+            windowsProcessJob?.Assign(process);
 
             long startTimeUtcTicks;
             try
@@ -85,7 +96,6 @@ internal sealed class RoslynLanguageServerProcess : IAsyncDisposable
             }
             catch (Exception exception)
             {
-                TryKillNoThrow(process);
                 throw new InvalidOperationException(
                     "Roslyn Language Server started but its process start time could not be captured.",
                     exception);
@@ -93,13 +103,17 @@ internal sealed class RoslynLanguageServerProcess : IAsyncDisposable
 
             RoslynLanguageServerProcess owner = new(
                 process,
+                windowsProcessJob,
                 new RoslynProcessIdentity(process.Id, startTimeUtcTicks, roslynGeneration),
                 exitObserver);
+            windowsProcessJob = null;
 
             return Task.FromResult(owner);
         }
         catch
         {
+            TryKillNoThrow(process);
+            windowsProcessJob?.Dispose();
             process.Dispose();
             throw;
         }
@@ -136,11 +150,24 @@ internal sealed class RoslynLanguageServerProcess : IAsyncDisposable
                 await ForceKillAsync(cancellationToken).ConfigureAwait(false);
             }
 
+            if (_windowsProcessJob is not null)
+            {
+                await _windowsProcessJob
+                    .TerminateRemainingProcessesAndWaitAsync(
+                        RoslynLanguageServerConstants.ForcedExitTimeout,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             await AwaitOwnedTasksAsync(cancellationToken).ConfigureAwait(false);
-            DisposeTerminalResources();
         }
         finally
         {
+            if (HasExited)
+            {
+                DisposeTerminalResources();
+            }
+
             _retirementGate.Release();
         }
     }
@@ -316,6 +343,7 @@ internal sealed class RoslynLanguageServerProcess : IAsyncDisposable
             return;
         }
 
+        _windowsProcessJob?.Dispose();
         _stderrDrainCancellation.Cancel();
         _stderrDrainCancellation.Dispose();
         _process.Dispose();

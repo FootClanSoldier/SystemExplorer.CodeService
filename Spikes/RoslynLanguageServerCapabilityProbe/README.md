@@ -16,7 +16,7 @@ The probe is designed for exactly:
 - `roslyn-language-server` **5.12.0-1.26426.8**
 - `StreamJsonRpc` **2.25.29**
 - target framework `net10.0`
-- probe version **1.3.6** / ordinary report schema **3** / semantic-origin-only report schema **1**
+- probe version **1.3.9** / ordinary report schema **3** / semantic-origin-only report schema **1**
 - optional Roslyn state-lineage instrumentation base: `dotnet/roslyn` commit `3aeb96c9ecc56a5ee483558f9e648e33e7bfe756`
 
 Do not replace the Roslyn tool version with `latest`, a wildcard, or another prerelease version when collecting evidence for this spike. If the exact tool package is unavailable, stop the runtime verification rather than silently substituting a different Roslyn Language Server build.
@@ -998,9 +998,9 @@ dotnet build Spikes/SystemExplorer.CodeService.Spikes.slnx -c Release
 The production solution intentionally does not build the spike or restore StreamJsonRpc. `SystemExplorer.CodeService.csproj` also keeps `<Compile Remove="Spikes/**/*.cs" />` as an independent source-glob isolation boundary.
 
 
-## Probe 1.3.6 — CompletionSemanticOrigin one-command verification
+## Probe 1.3.9 — CompletionSemanticOrigin V9 qualified-name recovery verification
 
-Probe 1.3.6 keeps ordinary report schema 3, all ordinary `ProbeBaseline` capabilities, the existing
+Probe 1.3.9 keeps ordinary report schema 3, all ordinary `ProbeBaseline` capabilities, the existing
 full-suite suitability classifier, and the diagnostic-only status of `CompletionSemanticOrigin`
 unchanged. Full capability mode still requires `--server`, still runs
 `RoslynLanguageServerToolVerifier`, still executes the current `ProbeScenarioRunner`, and still derives
@@ -1017,7 +1017,7 @@ It remains outside `RequiredFixtureScenarios`; its PASS/FAIL/SKIPPED result does
 `SuitableCandidate` / `UnsuitableCandidate`, `FixtureSemanticRequestSucceeded`,
 `FixtureSemanticReadyMs`, fixture server capabilities, or primary document/version state.
 
-Probe 1.3.6 additionally adds an explicit dedicated mode:
+Probe 1.3.9 retains the explicit dedicated mode:
 
 ```text
 --semantic-origin-only
@@ -1040,8 +1040,13 @@ LocalFunction
 CurrentType        depth 0
 BaseType           depth 1
 BaseType           depth 2
-OtherUserCode
-source-backed reduced extension
+ExplicitReceiverCurrentType  depth 0
+TypeReceiverCurrentType         depth 0 in unrelated and shared-base lexical consumers
+TypeReceiverBaseType            depth 1 in unrelated and shared-base lexical consumers
+TypeReceiver lexical-context evidence invariance
+QualifiedNameRecovery value receiver CurrentType depth 0 / BaseType depth 1
+QualifiedNameRecovery named-type receiver CurrentType depth 0 / BaseType depth 1
+source-backed reduced extension -> OtherUserCode
 FrameworkOrOther
 Unknown/non-symbol control
 metadata well-formedness
@@ -1059,8 +1064,8 @@ Only the semantic-origin scenario uses
 `RoslynLspClientCapabilityProfile.ProductionCompletionWire`, which mirrors the current production
 completion-relevant VS-extension wire. Existing scenarios continue to use `ProbeBaseline` exactly as
 before. The temporary semantic classifier and its fail-closed rules remain diagnostic evidence only;
-production now carries the same verified classifier semantics through the separate private Roslyn v2
-runtime and Service `CompletionSchemaVersion = 3`. The probe still does not own or compile into that
+production now carries the verified receiver-relative/type-receiver/qualified-name-recovery classifier semantics through the separate private Roslyn v9
+runtime and Service `CompletionSchemaVersion = 5`. The probe still does not own or compile into that
 production implementation.
 
 ### Normal one-command semantic-origin verification
@@ -1083,13 +1088,15 @@ SYSTEMEXPLORER_SERVICE_THIRDPARTY_ZIP
 after which `Run-CompletionSemanticOrigin.cmd` is sufficient. Explicit parameters take precedence over
 environment values. The runner does not scan disks or guess locations.
 
-The runner verifies the exact current production-v2 `Service.ThirdParty.zip` SHA-256, opens it through
-.NET zip APIs, verifies unique canonical `0001` and `0002` entries plus both pinned hashes, and extracts
+The runner verifies the exact current production-v9 `Service.ThirdParty.zip` SHA-256, opens it through
+.NET zip APIs, verifies unique canonical `0001`, `0002`, `0007`, `0008`, and `0009` entries plus their pinned hashes, and extracts
 only `ThirdParty/RoslynLanguageServer/PROVENANCE.txt` and canonical semantic-reuse `0001`. The low-level
 preparation intentionally rebuilds the historical semantic-reuse-only v1 baseline before adding
-throwaway diagnostic instrumentation, so production `0002` is validated as current archive provenance
-but is not applied to that temporary baseline. The supplied normal Roslyn repository is not checked
-out, reset, cleaned, patched, or otherwise source-mutated.
+throwaway diagnostic instrumentation, so production `0002`, `0007`, `0008`, and `0009` are validated as current archive provenance
+but are not applied to that temporary baseline. Instrumentation version 4 mirrors the V9 receiver resolver, including
+unambiguous named-type and alias-to-type authority before the namespace/type fail-closed guard plus cross-line
+`QualifiedName` recovery through speculative `BindAsExpression`. The supplied normal
+Roslyn repository is not checked out, reset, cleaned, patched, or otherwise source-mutated.
 
 The runner then invokes the existing low-level `Prepare-CompletionSemanticOrigin.ps1` against the owned
 clean worktree. That remains the single implementation of Roslyn restore, canonical patch application,

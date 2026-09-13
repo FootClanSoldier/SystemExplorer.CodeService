@@ -1,0 +1,184 @@
+diff --git a/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
+--- a/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
++++ b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
+@@ -33,6 +33,9 @@ internal static class SystemExplorerCompletionSemanticOrigin
+         }
+ 
+         var receiverSymbolInfo = context.SemanticModel.GetSymbolInfo(receiverExpression, cancellationToken);
++        if (ResolveNamedTypeAuthority(receiverSymbolInfo.Symbol) is { } namedTypeAuthority)
++            return namedTypeAuthority;
++
+         if (IsNamespaceOrTypeAuthority(receiverSymbolInfo.Symbol)
+             || receiverSymbolInfo.CandidateSymbols.Any(IsNamespaceOrTypeAuthority))
+         {
+@@ -117,6 +120,14 @@ internal static class SystemExplorerCompletionSemanticOrigin
+         return ClassifyDeclarationAuthority(declaration);
+     }
+ 
++    private static INamedTypeSymbol? ResolveNamedTypeAuthority(ISymbol? symbol)
++        => symbol switch
++        {
++            INamedTypeSymbol type when type.TypeKind != TypeKind.Error => type,
++            IAliasSymbol { Target: INamedTypeSymbol target } when target.TypeKind != TypeKind.Error => target,
++            _ => null,
++        };
++
+     private static bool IsNamespaceOrTypeAuthority(ISymbol? symbol)
+         => symbol is INamespaceSymbol or INamedTypeSymbol
+             || symbol is IAliasSymbol { Target: INamespaceOrTypeSymbol };
+diff --git a/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs b/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
+--- a/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
++++ b/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
+@@ -598,6 +598,137 @@
+         AssertSystemExplorerCompletionEvidence(completionList, "GetType", "BaseType", "2");
+     }
+ 
++    [Fact]
++    public async Task CompletionSemanticOriginUsesNamedTypeReceiverForStaticMemberAccess()
++    {
++        var completionList = await GetSystemExplorerCompletionListAsync("""
++            class AppRootBase
++            {
++                public static void BaseStaticMember() { }
++            }
++
++            class AppRoot : AppRootBase
++            {
++                public static AppRoot Instance => null;
++            }
++
++            class UnrelatedLexicalType
++            {
++                void M()
++                {
++                    AppRoot.$$
++                }
++            }
++            """);
++
++        AssertSystemExplorerCompletionEvidence(completionList, "Instance", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(completionList, "BaseStaticMember", "BaseType", "1");
++    }
++
++    [Fact]
++    public async Task CompletionSemanticOriginUsesNamedTypeReceiverIndependentOfLexicalContainingType()
++    {
++        var plainCompletionList = await GetSystemExplorerCompletionListAsync("""
++            class SharedFrameworkBase
++            {
++                public static void SharedBaseStaticMember() { }
++            }
++
++            class AppRoot : SharedFrameworkBase
++            {
++                public static AppRoot Instance => null;
++            }
++
++            class PlainConsumer
++            {
++                void M()
++                {
++                    AppRoot.$$
++                }
++            }
++            """);
++
++        var sharedBaseCompletionList = await GetSystemExplorerCompletionListAsync("""
++            class SharedFrameworkBase
++            {
++                public static void SharedBaseStaticMember() { }
++            }
++
++            class AppRoot : SharedFrameworkBase
++            {
++                public static AppRoot Instance => null;
++            }
++
++            class FrameworkLikeConsumer : SharedFrameworkBase
++            {
++                void M()
++                {
++                    AppRoot.$$
++                }
++            }
++            """);
++
++        AssertSystemExplorerCompletionEvidence(plainCompletionList, "Instance", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(plainCompletionList, "SharedBaseStaticMember", "BaseType", "1");
++        AssertSystemExplorerCompletionEvidence(sharedBaseCompletionList, "Instance", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(sharedBaseCompletionList, "SharedBaseStaticMember", "BaseType", "1");
++    }
++
++    [Fact]
++    public async Task CompletionSemanticOriginUsesNamedTypeAliasReceiverForStaticMemberAccess()
++    {
++        var completionList = await GetSystemExplorerCompletionListAsync("""
++            using RootAlias = ProjectTypes.AppRoot;
++
++            namespace ProjectTypes
++            {
++                class AppRootBase
++                {
++                    public static void BaseStaticMember() { }
++                }
++
++                class AppRoot : AppRootBase
++                {
++                    public static AppRoot Instance => null;
++                }
++            }
++
++            class UnrelatedLexicalType
++            {
++                void M()
++                {
++                    RootAlias.$$
++                }
++            }
++            """);
++
++        AssertSystemExplorerCompletionEvidence(completionList, "Instance", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(completionList, "BaseStaticMember", "BaseType", "1");
++    }
++
++    [Fact]
++    public async Task CompletionSemanticOriginPreservesDeclarationAuthorityForNamespaceReceiver()
++    {
++        var completionList = await GetSystemExplorerCompletionListAsync("""
++            namespace ProjectTypes
++            {
++                public class CandidateType
++                {
++                }
++            }
++
++            class UnrelatedLexicalType
++            {
++                void M()
++                {
++                    ProjectTypes.$$
++                }
++            }
++            """);
++
++        AssertSystemExplorerCompletionEvidenceWithoutDepth(completionList, "CandidateType", "OtherUserCode");
++    }
++
+     private static async Task<CompletionList> GetSystemExplorerCompletionListAsync(string markup)
+     {
+         MarkupTestFile.GetPosition(markup.NormalizeLineEndings(), out var source, out int? position);
+@@ -625,4 +756,14 @@
+         Assert.Equal(expectedOrigin, item.Properties["SystemExplorer.CompletionSemanticOrigin"]);
+         Assert.Equal(expectedDepth, item.Properties["SystemExplorer.CompletionInheritanceDepth"]);
+     }
++
++    private static void AssertSystemExplorerCompletionEvidenceWithoutDepth(
++        CompletionList completionList,
++        string displayText,
++        string expectedOrigin)
++    {
++        var item = completionList.ItemsList.Single(item => item.DisplayText == displayText);
++        Assert.Equal(expectedOrigin, item.Properties["SystemExplorer.CompletionSemanticOrigin"]);
++        Assert.False(item.Properties.ContainsKey("SystemExplorer.CompletionInheritanceDepth"));
++    }
+ }

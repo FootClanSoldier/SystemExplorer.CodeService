@@ -26,9 +26,9 @@
     <PrivateRoslynLanguageServerProtocolDll>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.Protocol.dll</PrivateRoslynLanguageServerProtocolDll>
     <PrivateRoslynDepsJson>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.deps.json</PrivateRoslynDepsJson>
     <PrivateRoslynRuntimeConfigJson>$(PrivateRoslynRuntimeSourceDirectory)/Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json</PrivateRoslynRuntimeConfigJson>
-    <PrivateRoslynServerDllSha256>D085B09DA0A2D0B636C898B745D185C0739443CDCAF35F7A329649880772C243</PrivateRoslynServerDllSha256>
-    <PrivateRoslynFeaturesDllSha256>2E7E23515CC2C42DBDA8722BA1F00A9DDBF69619298AFC5CA93C3B4647935D85</PrivateRoslynFeaturesDllSha256>
-    <PrivateRoslynLanguageServerProtocolDllSha256>89534EF1B6F5E1D439D4356772D93638B396E1EDF3BA36AA19934A705C72891C</PrivateRoslynLanguageServerProtocolDllSha256>
+    <PrivateRoslynServerDllSha256>0B7928B1A76CF4D842622A0BE97C7858FBD9F65ABB0B71FF0940FD7B0BD69F68</PrivateRoslynServerDllSha256>
+    <PrivateRoslynFeaturesDllSha256>8F67305F8F586D35F4DA5E186840D5CDA806411BF43155A43BC02798A45B3C6D</PrivateRoslynFeaturesDllSha256>
+    <PrivateRoslynLanguageServerProtocolDllSha256>A645F0EF5076A779864AD571163FA895BE25B0CF93E100C964F5FFD26307CCCF</PrivateRoslynLanguageServerProtocolDllSha256>
 
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>

@@ -16,7 +16,7 @@ internal static class Program
             ["SemanticOriginCurrentTypeDepthObserved"] = "CurrentType depth=0",
             ["SemanticOriginBaseDepth1Observed"] = "BaseType depth=1",
             ["SemanticOriginBaseDepth2Observed"] = "BaseType depth=2",
-            ["SemanticOriginOtherUserCodeObserved"] = "OtherUserCode",
+            ["SemanticOriginExplicitReceiverCurrentTypeObserved"] = "ExplicitReceiverCurrentType depth=0",
             ["SemanticOriginSourceExtensionObserved"] = "SourceExtension",
             ["SemanticOriginFrameworkObserved"] = "FrameworkOrOther",
             ["SemanticOriginUnknownNonSymbolControlObserved"] = "UnknownNonSymbol",

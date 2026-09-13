@@ -53,10 +53,10 @@ Run-CompletionSemanticOrigin.cmd ^
 
 The explicit parameters may be replaced by
 `SYSTEMEXPLORER_ROSLYN_REPOSITORY_ROOT` and
-`SYSTEMEXPLORER_SERVICE_THIRDPARTY_ZIP`. The runner verifies the exact current production-v2 archive
-SHA, verifies unique canonical semantic-reuse `0001` and semantic-origin `0002` entries plus both pinned
-hashes through .NET zip APIs, and extracts only PROVENANCE plus `0001` because the temporary
-instrumentation path intentionally reconstructs the semantic-reuse-only v1 preparation baseline. It
+`SYSTEMEXPLORER_SERVICE_THIRDPARTY_ZIP`. The runner verifies the exact current production-v9 archive SHA, verifies unique canonical semantic-reuse `0001`,
+semantic-origin `0002`, receiver-relative semantic-origin `0007`, named-type receiver semantic-origin `0008`, and qualified-name receiver-recovery `0009` entries plus their pinned hashes through .NET
+zip APIs, and extracts only PROVENANCE plus `0001` because the temporary instrumentation path intentionally
+reconstructs the semantic-reuse-only v1 preparation baseline. It
 requires the pinned commit object to already exist locally, creates a unique detached runner-owned
 worktree, and invokes the existing low-level prepare script. It performs no clone, fetch, Roslyn
 download, ThirdParty download, or disk scanning.
@@ -100,8 +100,13 @@ the original completion item unchanged. It writes no source text or logs. The pr
 the protected nested `SymbolAndSelectionInfo` representation and projects the complete grouped list to
 `ImmutableArray<ISymbol>` before crossing into the standalone helper. The helper therefore classifies
 the same complete symbol group without depending on an inaccessible Roslyn nested type; grouped symbols
-must agree on both origin and depth or the item becomes `Unknown` without depth. Reduced extension methods classify from `ReducedFrom`, and current/base authority is the
-lexical containing type at the completion position rather than an arbitrary receiver type.
+must agree on both origin and depth or the item becomes `Unknown` without depth. Instrumentation version 4 mirrors
+production V9 receiver semantics: safe ordinary explicit value receivers keep the V7 `TypeInfo`-based anchor; an
+unambiguous resolved named-type receiver or alias targeting a non-error named type is accepted as the semantic anchor
+before the namespace/type fail-closed guard; and cross-line `QualifiedName` parser recovery binds the left receiver
+speculatively with `BindAsExpression` before feeding the same authority-resolution rules. `this`, `base`, unqualified completion, namespaces, namespace aliases,
+ambiguous/error type authority, and unsupported receiver shapes fall back to the lexical containing type. Reduced
+extension methods still classify from `ReducedFrom` declaration authority and therefore remain `OtherUserCode` in the probe case.
 
 Temporary metadata flows only as:
 
@@ -118,7 +123,60 @@ location contract is introduced. No Roslyn binaries, generated wrapper, generate
 checkout, build output, extracted ThirdParty files, reports, or logs belong in the Service patch zip.
 
 
-## Production runtime reproduction
+
+## Current V9 production runtime reproduction
+
+`ProductionRuntime/Build-ProductionQualifiedNameReceiverRecoveryRuntime_v3.cmd` is the retained Windows one-command
+reproduction/promotion entrypoint for the adopted private Roslyn V9 runtime. Its companion `.ps1`, bundled canonical
+`0009-Preserve-receiver-relative-completion-through-qualified-name-recovery.patch`, and `README-V9-Builder-v3.txt`
+are preserved from the successful V9 build kit. The builder consumes the verified V8 ThirdParty baseline, verifies
+canonical `0001 -> 0008`, applies corrected canonical `0009`, runs the retained protocol/workspace gates plus the full
+C# `CompletionServiceTests` class, builds a coherent LanguageServer Release payload, and produces
+`Service.ThirdParty_V9.zip` plus evidence/adoption values.
+
+The adopted V9 identities are:
+
+```text
+0009 SHA-256:
+2b9ee3aff616702ac2b40a3fc1ba70eedb81c006d891f144b0580c3ba53b4ffd
+
+distribution id:
+roslyn-3aeb96c9-systemexplorer-2b9ee3aff616-win-x64-v9
+
+Service.ThirdParty_V9.zip SHA-256:
+93fdbbcbbf384f14a72d7ab778dbfa43eb03431db76022aa1487137820572321
+```
+
+The materializing V9 build reported `CompletionServiceTests` total 24, passed 24, failed 0, skipped 0. Runtime
+bytes remain external ThirdParty authority; these retained scripts are reproducibility/build-verification tooling only.
+
+## Historical V8 production runtime reproduction
+
+`ProductionRuntime/Build-ProductionTypeReceiverSemanticOriginRuntime_v2.cmd` is the retained Windows one-command
+reproduction/promotion entrypoint for the adopted private Roslyn V8 runtime. Its companion `.ps1` and
+`README-V8-Builder-v2.txt` are preserved byte-for-byte from the successful V8 build kit. The builder consumes the
+verified V7 ThirdParty baseline plus canonical external `0008`, verifies the pinned `0001 -> 0007` chain, applies
+`0001 -> 0008`, runs the retained protocol/workspace gates plus the full C# `CompletionServiceTests` class, builds
+a coherent LanguageServer Release payload, and produces `Service.ThirdParty_V8.zip` plus evidence/adoption values.
+
+The adopted V8 identities are:
+
+```text
+0008 SHA-256:
+df87da9cf8f7a02217e71341734ae892d653506838680a2768c1177782fbd400
+
+distribution id:
+roslyn-3aeb96c9-systemexplorer-df87da9cf8f7-win-x64-v8
+
+Service.ThirdParty_V8.zip SHA-256:
+ad2c4801a8dc06b4d564e46436c2006af7f502e885b5e1df61f767c2c292129f
+```
+
+The materializing V8 build reported `CompletionServiceTests` total 21, passed 21, failed 0, skipped 0. Runtime
+bytes remain external ThirdParty authority; these retained scripts are reproducibility/build-verification tooling only.
+
+
+## Historical V2 production runtime reproduction
 
 `ProductionRuntime/Build-ProductionCompletionSemanticOriginRuntime.cmd` is the Windows one-command
 reproduction/promotion entrypoint for the private Roslyn production runtime. It accepts a normal local

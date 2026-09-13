@@ -1,5 +1,12 @@
 # Production completion semantic-origin runtime reproduction
 
+Current adopted runtime: V9. Use `Build-ProductionQualifiedNameReceiverRecoveryRuntime_v3.cmd` / `.ps1`,
+`README-V9-Builder-v3.txt`, and the bundled corrected canonical `0009-Preserve-receiver-relative-completion-through-qualified-name-recovery.patch`
+for the canonical V9 reproduction path. The materialized V9 runtime is external ThirdParty authority and is not
+embedded in the normal Service source zip.
+
+The historical material immediately below documents the retained V2 reproduction baseline; later sections inventory newer retained reproduction kits.
+
 This directory contains the deterministic external build recipe used to produce the
 SystemExplorer private Roslyn Language Server win-x64 v2 distribution for production
 completion semantic-origin metadata.
@@ -66,3 +73,23 @@ dotnet pack SystemExplorer.CodeService.csproj -c Release
 The pack target independently validates the pinned LanguageServer, Features and
 LanguageServer.Protocol DLL hashes. Generated `bin/`, `obj/` and `nupkg/` are verification artifacts
 and do not belong in the source delivery zip.
+
+
+## Adopted V9 qualified-name receiver-recovery reproduction
+
+The current retained V9 one-command builder is:
+
+```text
+Build-ProductionQualifiedNameReceiverRecoveryRuntime_v3.cmd
+Build-ProductionQualifiedNameReceiverRecoveryRuntime_v3.ps1
+README-V9-Builder-v3.txt
+0009-Preserve-receiver-relative-completion-through-qualified-name-recovery.patch
+```
+
+It consumes the verified V8 baseline (`Service.ThirdParty_V8.zip` SHA-256
+`ad2c4801a8dc06b4d564e46436c2006af7f502e885b5e1df61f767c2c292129f`) and the corrected canonical 0009
+SHA-256 `2b9ee3aff616702ac2b40a3fc1ba70eedb81c006d891f144b0580c3ba53b4ffd`. The successful materialization
+produced distribution `roslyn-3aeb96c9-systemexplorer-2b9ee3aff616-win-x64-v9`,
+`Service.ThirdParty_V9.zip` SHA-256 `93fdbbcbbf384f14a72d7ab778dbfa43eb03431db76022aa1487137820572321`, and a full
+`CompletionServiceTests` result of 24 passed / 0 failed / 0 skipped. The retained builder is reproducibility tooling;
+the separate verified `Service.ThirdParty_V9.zip` remains the authoritative ThirdParty payload.

@@ -2,6 +2,9 @@
 using System;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Threading;
+using Microsoft.CodeAnalysis.LanguageService;
+using Microsoft.CodeAnalysis.Shared.Extensions;
 using Microsoft.CodeAnalysis.Shared.Extensions.ContextQuery;
 
 namespace Microsoft.CodeAnalysis.Completion.Providers;
@@ -23,10 +26,13 @@ internal static class SystemExplorerCompletionSemanticOrigin
         if (symbols.IsDefaultOrEmpty)
             return item.AddProperty(OriginPropertyKey, "Unknown");
 
+        INamedTypeSymbol? semanticAnchor = ResolveExplicitReceiverAnchor(context, CancellationToken.None)
+            ?? GetLexicalContainingType(context.SemanticModel, context.Position);
+
         OriginEvidence? aggregate = null;
         foreach (ISymbol symbol in symbols)
         {
-            OriginEvidence current = Classify(symbol, context);
+            OriginEvidence current = Classify(symbol, semanticAnchor);
             if (aggregate is null)
             {
                 aggregate = current;
@@ -44,7 +50,64 @@ internal static class SystemExplorerCompletionSemanticOrigin
             : item;
     }
 
-    private static OriginEvidence Classify(ISymbol symbol, SyntaxContext context)
+    private static INamedTypeSymbol? ResolveExplicitReceiverAnchor(
+        SyntaxContext context,
+        CancellationToken cancellationToken)
+    {
+        if (!context.IsRightOfNameSeparator)
+            return null;
+
+        var syntaxFacts = context.GetRequiredLanguageService<ISyntaxFactsService>();
+        var parentNode = context.TargetToken.Parent;
+        if (syntaxFacts.IsSimpleMemberAccessExpression(parentNode))
+        {
+            var memberAccessReceiverExpression = syntaxFacts.GetExpressionOfMemberAccessExpression(
+                parentNode, allowImplicitTarget: false);
+            if (memberAccessReceiverExpression is null
+                || syntaxFacts.IsThisExpression(memberAccessReceiverExpression)
+                || syntaxFacts.IsBaseExpression(memberAccessReceiverExpression))
+            {
+                return null;
+            }
+
+            var receiverSymbolInfo = context.SemanticModel.GetSymbolInfo(memberAccessReceiverExpression, cancellationToken);
+            if (TryResolveReceiverAnchorFromSymbolInfo(receiverSymbolInfo, out var receiverAnchor))
+                return receiverAnchor;
+
+            return ResolveValueReceiverAnchor(
+                context.SemanticModel.GetTypeInfo(memberAccessReceiverExpression, cancellationToken));
+        }
+
+        if (!syntaxFacts.IsQualifiedName(parentNode))
+            return null;
+
+        syntaxFacts.GetPartsOfQualifiedName(
+            parentNode, out var receiverExpression, out var dotToken, out var right);
+        if (syntaxFacts.IsThisExpression(receiverExpression)
+            || syntaxFacts.IsBaseExpression(receiverExpression))
+        {
+            return null;
+        }
+
+        var sourceText = parentNode.SyntaxTree.GetText(cancellationToken);
+        if (sourceText.AreOnSameLine(dotToken, right.GetFirstToken()))
+            return null;
+
+        var speculativeReceiverSymbolInfo = context.SemanticModel.GetSpeculativeSymbolInfo(
+            receiverExpression.SpanStart,
+            receiverExpression,
+            SpeculativeBindingOption.BindAsExpression);
+        if (TryResolveReceiverAnchorFromSymbolInfo(speculativeReceiverSymbolInfo, out var speculativeReceiverAnchor))
+            return speculativeReceiverAnchor;
+
+        return ResolveValueReceiverAnchor(
+            context.SemanticModel.GetSpeculativeTypeInfo(
+                receiverExpression.SpanStart,
+                receiverExpression,
+                SpeculativeBindingOption.BindAsExpression));
+    }
+
+    private static OriginEvidence Classify(ISymbol symbol, INamedTypeSymbol? semanticAnchor)
     {
         if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol
             || symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction })
@@ -56,16 +119,15 @@ internal static class SystemExplorerCompletionSemanticOrigin
             return ClassifyDeclarationAuthority(reduced.ReducedFrom);
 
         ISymbol declaration = symbol;
-        INamedTypeSymbol? lexicalType = GetLexicalContainingType(context.SemanticModel, context.Position);
-        if (declaration.ContainingType is INamedTypeSymbol containingType && lexicalType is not null)
+        if (declaration.ContainingType is INamedTypeSymbol containingType && semanticAnchor is not null)
         {
             INamedTypeSymbol declarationType = containingType.OriginalDefinition;
-            INamedTypeSymbol current = lexicalType.OriginalDefinition;
+            INamedTypeSymbol current = semanticAnchor.OriginalDefinition;
             if (SymbolEqualityComparer.Default.Equals(declarationType, current))
                 return new("CurrentType", 0);
 
             int depth = 1;
-            for (INamedTypeSymbol? baseType = lexicalType.BaseType; baseType is not null; baseType = baseType.BaseType, depth++)
+            for (INamedTypeSymbol? baseType = semanticAnchor.BaseType; baseType is not null; baseType = baseType.BaseType, depth++)
             {
                 if (SymbolEqualityComparer.Default.Equals(declarationType, baseType.OriginalDefinition))
                     return new("BaseType", depth);
@@ -74,6 +136,44 @@ internal static class SystemExplorerCompletionSemanticOrigin
 
         return ClassifyDeclarationAuthority(declaration);
     }
+
+    private static bool TryResolveReceiverAnchorFromSymbolInfo(
+        SymbolInfo receiverSymbolInfo,
+        out INamedTypeSymbol? receiverAnchor)
+    {
+        if (ResolveNamedTypeAuthority(receiverSymbolInfo.Symbol) is { } namedTypeAuthority)
+        {
+            receiverAnchor = namedTypeAuthority;
+            return true;
+        }
+
+        if (IsNamespaceOrTypeAuthority(receiverSymbolInfo.Symbol)
+            || receiverSymbolInfo.CandidateSymbols.Any(IsNamespaceOrTypeAuthority))
+        {
+            receiverAnchor = null;
+            return true;
+        }
+
+        receiverAnchor = null;
+        return false;
+    }
+
+    private static INamedTypeSymbol? ResolveValueReceiverAnchor(TypeInfo receiverTypeInfo)
+        => receiverTypeInfo.Type is INamedTypeSymbol { TypeKind: not TypeKind.Error } receiverType
+            ? receiverType
+            : null;
+
+    private static INamedTypeSymbol? ResolveNamedTypeAuthority(ISymbol? symbol)
+        => symbol switch
+        {
+            INamedTypeSymbol type when type.TypeKind != TypeKind.Error => type,
+            IAliasSymbol { Target: INamedTypeSymbol target } when target.TypeKind != TypeKind.Error => target,
+            _ => null,
+        };
+
+    private static bool IsNamespaceOrTypeAuthority(ISymbol? symbol)
+        => symbol is INamespaceSymbol or INamedTypeSymbol
+            || symbol is IAliasSymbol { Target: INamespaceOrTypeSymbol };
 
     private static OriginEvidence ClassifyDeclarationAuthority(ISymbol declaration)
     {

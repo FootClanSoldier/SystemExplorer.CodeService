@@ -18,20 +18,23 @@ internal sealed class RoslynLanguageServerRuntime
     public const string CompletionIncrementalReusePatchSha256 = "39D4217634DCF32304E071B1D8E01FA42778461CA903B07544490E451807F6EC";
     public const string ImportCompletionContractPatchSha256 = "608B4EFA8B50E85EFBD9A7D6CF2BF0C31200809EE7D42E2C9B243A40858770B0";
     public const string ImportCompletionReadinessPatchSha256 = "8DD66DA05D857ECB0737973C343F04A9D20BB7B4C35DA5A010E9CA4109405524";
+    public const string ReceiverRelativeSemanticOriginPatchSha256 = "CD4F905C4B2B60CEC000DCAAD83241D18D151EDB1AFF625F4588EFFCC180FE3C";
+    public const string TypeReceiverSemanticOriginPatchSha256 = "DF87DA9CF8F7A02217E71341734AE892D653506838680A2768C1177782FBD400";
+    public const string QualifiedNameReceiverRecoveryPatchSha256 = "2B9EE3AFF616702AC2B40A3FC1BA70EEDB81C006D891F144B0580C3BA53B4FFD";
 
-    // Materialized production identity from the canonical private Roslyn v6 build.
+    // Materialized production identity from the canonical private Roslyn v9 build.
     // Runtime and pack validation both fail closed if these exact binaries are not present.
-    public const string DistributionId = "roslyn-3aeb96c9-systemexplorer-8dd66da05d85-win-x64-v6";
-    public const string LanguageServerDllSha256 = "D085B09DA0A2D0B636C898B745D185C0739443CDCAF35F7A329649880772C243";
-    public const string FeaturesDllSha256 = "2E7E23515CC2C42DBDA8722BA1F00A9DDBF69619298AFC5CA93C3B4647935D85";
-    public const string LanguageServerProtocolDllSha256 = "89534EF1B6F5E1D439D4356772D93638B396E1EDF3BA36AA19934A705C72891C";
+    public const string DistributionId = "roslyn-3aeb96c9-systemexplorer-2b9ee3aff616-win-x64-v9";
+    public const string LanguageServerDllSha256 = "0B7928B1A76CF4D842622A0BE97C7858FBD9F65ABB0B71FF0940FD7B0BD69F68";
+    public const string FeaturesDllSha256 = "8F67305F8F586D35F4DA5E186840D5CDA806411BF43155A43BC02798A45B3C6D";
+    public const string LanguageServerProtocolDllSha256 = "A645F0EF5076A779864AD571163FA895BE25B0CF93E100C964F5FFD26307CCCF";
 
     private const string ServerDllFileName = "Microsoft.CodeAnalysis.LanguageServer.dll";
     private const string FeaturesDllFileName = "Microsoft.CodeAnalysis.Features.dll";
     private const string LanguageServerProtocolDllFileName = "Microsoft.CodeAnalysis.LanguageServer.Protocol.dll";
     private const string DepsFileName = "Microsoft.CodeAnalysis.LanguageServer.deps.json";
     private const string RuntimeConfigFileName = "Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json";
-    private const string PendingRuntimeHashSentinel = "V6_BUILD_REQUIRED";
+    private const string PendingRuntimeHashSentinel = "V9_BUILD_REQUIRED";
     private const string PendingDistributionIdMarker = "SOURCE-BUILD-REQUIRED";
 
     private RoslynLanguageServerRuntime(
@@ -90,6 +93,12 @@ internal sealed class RoslynLanguageServerRuntime
 
     public string VerifiedImportCompletionReadinessPatchSha256 => ImportCompletionReadinessPatchSha256;
 
+    public string VerifiedReceiverRelativeSemanticOriginPatchSha256 => ReceiverRelativeSemanticOriginPatchSha256;
+
+    public string VerifiedTypeReceiverSemanticOriginPatchSha256 => TypeReceiverSemanticOriginPatchSha256;
+
+    public string VerifiedQualifiedNameReceiverRecoveryPatchSha256 => QualifiedNameReceiverRecoveryPatchSha256;
+
     public static RoslynLanguageServerRuntimeValidationResult TryValidate(
         string? runtimeDirectory,
         RoslynLanguageServerRuntimeSource runtimeSource = RoslynLanguageServerRuntimeSource.ExplicitOverride)
@@ -100,7 +109,7 @@ internal sealed class RoslynLanguageServerRuntime
             || DistributionId.Contains(PendingDistributionIdMarker, StringComparison.Ordinal))
         {
             return RoslynLanguageServerRuntimeValidationResult.Failure(
-                "Roslyn v6 source adoption is present, but build-derived runtime identity values have not been materialized yet.");
+                "Roslyn v9 source adoption is present, but build-derived runtime identity values have not been materialized yet.");
         }
 
         if (string.IsNullOrWhiteSpace(runtimeDirectory))

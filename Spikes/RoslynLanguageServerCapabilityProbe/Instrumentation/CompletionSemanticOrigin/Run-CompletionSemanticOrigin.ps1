@@ -14,16 +14,22 @@ $ErrorActionPreference = 'Stop'
 # state without changing any machine/user setting.
 $env:MSBUILDDISABLENODEREUSE = '1'
 
-$ExpectedCurrentServiceThirdPartyZipSha256 = '45f152e900326520626b5f17248fdf608d7a7e61f01da42b480dce138f5453d8'
+$ExpectedCurrentServiceThirdPartyZipSha256 = '93fdbbcbbf384f14a72d7ab778dbfa43eb03431db76022aa1487137820572321'
 $ExpectedCommit = '3aeb96c9ecc56a5ee483558f9e648e33e7bfe756'
 $ExpectedSemanticReusePatchSha256 = '11076630b66576961cfd3e56120b15c9e95b352e08f3f551053a79a647d2f2be'
 $ExpectedCompletionSemanticOriginPatchSha256 = '6818cc1b3a10c97b31782cce20b7590a4a7f1b39710d7b48dd5b234e1b3bc1fb'
-$ExpectedCurrentProductionDistributionId = 'roslyn-3aeb96c9-systemexplorer-6818cc1b3a10-win-x64-v2'
+$ExpectedReceiverRelativeSemanticOriginPatchSha256 = 'cd4f905c4b2b60cec000dcaad83241d18d151edb1aff625f4588effcc180fe3c'
+$ExpectedTypeReceiverSemanticOriginPatchSha256 = 'df87da9cf8f7a02217e71341734ae892d653506838680a2768c1177782fbd400'
+$ExpectedQualifiedNameReceiverRecoveryPatchSha256 = '2b9ee3aff616702ac2b40a3fc1ba70eedb81c006d891f144b0580c3ba53b4ffd'
+$ExpectedCurrentProductionDistributionId = 'roslyn-3aeb96c9-systemexplorer-2b9ee3aff616-win-x64-v9'
 $ExpectedPreparationBaselineDistributionId = 'roslyn-3aeb96c9-systemexplorer-405fb7f9860-win-x64-v1'
-$ExpectedInstrumentationVersion = 1
+$ExpectedInstrumentationVersion = 4
 $CanonicalProvenanceEntry = 'ThirdParty/RoslynLanguageServer/PROVENANCE.txt'
 $CanonicalSemanticReusePatchEntry = 'ThirdParty/RoslynLanguageServer/patches/0001-Fix-semantic-model-reuse-after-cross-document-semant.patch'
 $CanonicalCompletionSemanticOriginPatchEntry = 'ThirdParty/RoslynLanguageServer/patches/0002-Expose-SystemExplorer-completion-semantic-origin.patch'
+$CanonicalReceiverRelativeSemanticOriginPatchEntry = 'ThirdParty/RoslynLanguageServer/patches/0007-Classify-member-completion-relative-to-receiver-type.patch'
+$CanonicalTypeReceiverSemanticOriginPatchEntry = 'ThirdParty/RoslynLanguageServer/patches/0008-Classify-static-member-completion-relative-to-type-receiver.patch'
+$CanonicalQualifiedNameReceiverRecoveryPatchEntry = 'ThirdParty/RoslynLanguageServer/patches/0009-Preserve-receiver-relative-completion-through-qualified-name-recovery.patch'
 $OwnershipMarkerName = '.systemexplorer-completion-semantic-origin-owned'
 $InvalidArgumentsExitCode = 2
 $ServerSetupFailureExitCode = 3
@@ -164,7 +170,19 @@ function Verify-ThirdPartyProvenance([string] $ProvenancePath) {
         'Completion semantic-origin canonical patch:',
         'patches/0002-Expose-SystemExplorer-completion-semantic-origin.patch',
         'Completion semantic-origin canonical patch SHA-256:',
-        $ExpectedCompletionSemanticOriginPatchSha256.ToUpperInvariant()
+        $ExpectedCompletionSemanticOriginPatchSha256.ToUpperInvariant(),
+        'Receiver-relative completion semantic-origin canonical patch:',
+        'patches/0007-Classify-member-completion-relative-to-receiver-type.patch',
+        'Receiver-relative completion semantic-origin canonical patch SHA-256:',
+        $ExpectedReceiverRelativeSemanticOriginPatchSha256.ToUpperInvariant(),
+        'Named-type receiver completion semantic-origin canonical patch:',
+        'patches/0008-Classify-static-member-completion-relative-to-type-receiver.patch',
+        'Named-type receiver completion semantic-origin canonical patch SHA-256:',
+        $ExpectedTypeReceiverSemanticOriginPatchSha256.ToUpperInvariant(),
+        'Qualified-name receiver-recovery canonical patch:',
+        'patches/0009-Preserve-receiver-relative-completion-through-qualified-name-recovery.patch',
+        'Qualified-name receiver-recovery canonical patch SHA-256:',
+        $ExpectedQualifiedNameReceiverRecoveryPatchSha256.ToUpperInvariant()
     )) {
         if (-not $text.Contains($required)) {
             $lfRequired = $required.Replace("`r`n", "`n")
@@ -437,6 +455,21 @@ try {
             Fail-Setup "canonical completion semantic-origin patch SHA-256 mismatch; expected=$ExpectedCompletionSemanticOriginPatchSha256 actual=$semanticOriginPatchHash"
         }
 
+        $receiverRelativePatchHash = Get-ZipEntrySha256Lower $archive $CanonicalReceiverRelativeSemanticOriginPatchEntry
+        if ($receiverRelativePatchHash -ne $ExpectedReceiverRelativeSemanticOriginPatchSha256) {
+            Fail-Setup "canonical receiver-relative semantic-origin patch SHA-256 mismatch; expected=$ExpectedReceiverRelativeSemanticOriginPatchSha256 actual=$receiverRelativePatchHash"
+        }
+
+        $typeReceiverPatchHash = Get-ZipEntrySha256Lower $archive $CanonicalTypeReceiverSemanticOriginPatchEntry
+        if ($typeReceiverPatchHash -ne $ExpectedTypeReceiverSemanticOriginPatchSha256) {
+            Fail-Setup "canonical named-type receiver semantic-origin patch SHA-256 mismatch; expected=$ExpectedTypeReceiverSemanticOriginPatchSha256 actual=$typeReceiverPatchHash"
+        }
+
+        $qualifiedNameReceiverRecoveryPatchHash = Get-ZipEntrySha256Lower $archive $CanonicalQualifiedNameReceiverRecoveryPatchEntry
+        if ($qualifiedNameReceiverRecoveryPatchHash -ne $ExpectedQualifiedNameReceiverRecoveryPatchSha256) {
+            Fail-Setup "canonical qualified-name receiver-recovery patch SHA-256 mismatch; expected=$ExpectedQualifiedNameReceiverRecoveryPatchSha256 actual=$qualifiedNameReceiverRecoveryPatchHash"
+        }
+
         $provenanceDestination = Join-Path $ThirdPartyInputRoot $CanonicalProvenanceEntry
         $patchDestination = Join-Path $ThirdPartyInputRoot $CanonicalSemanticReusePatchEntry
         Copy-ZipEntryExactly $archive $CanonicalProvenanceEntry $provenanceDestination
@@ -449,7 +482,7 @@ try {
     if ($extractedSemanticReusePatchHash -ne $ExpectedSemanticReusePatchSha256) {
         Fail-Setup "extracted canonical semantic-reuse patch SHA-256 mismatch; expected=$ExpectedSemanticReusePatchSha256 actual=$extractedSemanticReusePatchHash"
     }
-    Write-RunnerLog 'Verified production-v2 ThirdParty provenance plus canonical 0001/0002; extracted only provenance and semantic-reuse 0001 for temporary preparation.'
+    Write-RunnerLog 'Verified production-v9 ThirdParty provenance plus canonical 0001/0002/0007/0008/0009; extracted only provenance and semantic-reuse 0001 for temporary preparation.'
 
     Write-Host "Creating owned Roslyn worktree at pinned commit $ExpectedCommit"
     [void](Invoke-GitText $RoslynRepositoryRoot @('worktree', 'add', '--quiet', '--detach', $OwnedWorktree, $ExpectedCommit))

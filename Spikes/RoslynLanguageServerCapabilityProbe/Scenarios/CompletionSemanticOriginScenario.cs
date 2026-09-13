@@ -74,12 +74,28 @@ internal static class CompletionSemanticOriginScenario
 
             CompletionRequestResult other = await session.Client.CompletionAsync(
                 context.Fixture.ConsumerPath, snapshot.Positions["OTHER"], cancellationToken).ConfigureAwait(false);
+            CompletionRequestResult typeReceiverPlain = await session.Client.CompletionAsync(
+                context.Fixture.ConsumerPath, snapshot.Positions["TYPE_RECEIVER_PLAIN"], cancellationToken).ConfigureAwait(false);
+            CompletionRequestResult typeReceiverSharedBase = await session.Client.CompletionAsync(
+                context.Fixture.ConsumerPath, snapshot.Positions["TYPE_RECEIVER_SHARED_BASE"], cancellationToken).ConfigureAwait(false);
+            CompletionRequestResult qualifiedNameRecovery = await session.Client.CompletionAsync(
+                context.Fixture.ConsumerPath, snapshot.Positions["QUALIFIED_NAME_RECOVERY"], cancellationToken).ConfigureAwait(false);
+            CompletionRequestResult qualifiedNameTypeRecovery = await session.Client.CompletionAsync(
+                context.Fixture.ConsumerPath, snapshot.Positions["QUALIFIED_NAME_TYPE_RECOVERY"], cancellationToken).ConfigureAwait(false);
             CompletionRequestResult framework = await session.Client.CompletionAsync(
                 context.Fixture.ConsumerPath, snapshot.Positions["FRAMEWORK"], cancellationToken).ConfigureAwait(false);
             CompletionRequestResult keyword = await session.Client.CompletionAsync(
                 context.Fixture.ConsumerPath, snapshot.Positions["KEYWORD"], cancellationToken).ConfigureAwait(false);
 
-            CompletionRequestResult[] responses = [unqualified, other, framework, keyword];
+            CompletionRequestResult[] responses = [
+                unqualified,
+                other,
+                typeReceiverPlain,
+                typeReceiverSharedBase,
+                qualifiedNameRecovery,
+                qualifiedNameTypeRecovery,
+                framework,
+                keyword];
             bool wellFormed = responses.SelectMany(static response => response.Items).All(static item => !item.SemanticOriginMetadataMalformed);
             checks.Add(new ProbeCheckResult("SemanticOriginMetadataWellFormed", wellFormed, DescribeMalformed(responses)));
 
@@ -90,8 +106,18 @@ internal static class CompletionSemanticOriginScenario
             AddExpected(checks, "SemanticOriginCurrentTypeDepthObserved", unqualified, "ProbeOriginCurrentMember", CompletionSemanticOriginKind.CurrentType, 0);
             AddExpected(checks, "SemanticOriginBaseDepth1Observed", unqualified, "ProbeOriginBase1Member", CompletionSemanticOriginKind.BaseType, 1);
             AddExpected(checks, "SemanticOriginBaseDepth2Observed", unqualified, "ProbeOriginBase2Member", CompletionSemanticOriginKind.BaseType, 2);
-            AddExpected(checks, "SemanticOriginOtherUserCodeObserved", other, "ProbeOriginOtherUserMember", CompletionSemanticOriginKind.OtherUserCode, null);
+            AddExpected(checks, "SemanticOriginExplicitReceiverCurrentTypeObserved", other, "ProbeOriginOtherUserMember", CompletionSemanticOriginKind.CurrentType, 0);
             AddExpected(checks, "SemanticOriginSourceExtensionObserved", other, "ProbeOriginExtension", CompletionSemanticOriginKind.OtherUserCode, null);
+            AddExpected(checks, "SemanticOriginTypeReceiverCurrentTypePlainObserved", typeReceiverPlain, "ProbeOriginStaticCurrentMember", CompletionSemanticOriginKind.CurrentType, 0);
+            AddExpected(checks, "SemanticOriginTypeReceiverBaseTypePlainObserved", typeReceiverPlain, "ProbeOriginStaticBaseMember", CompletionSemanticOriginKind.BaseType, 1);
+            AddExpected(checks, "SemanticOriginTypeReceiverCurrentTypeSharedBaseObserved", typeReceiverSharedBase, "ProbeOriginStaticCurrentMember", CompletionSemanticOriginKind.CurrentType, 0);
+            AddExpected(checks, "SemanticOriginTypeReceiverBaseTypeSharedBaseObserved", typeReceiverSharedBase, "ProbeOriginStaticBaseMember", CompletionSemanticOriginKind.BaseType, 1);
+            AddMatchingEvidence(checks, "SemanticOriginTypeReceiverCurrentTypeLexicalContextInvariant", typeReceiverPlain, typeReceiverSharedBase, "ProbeOriginStaticCurrentMember");
+            AddMatchingEvidence(checks, "SemanticOriginTypeReceiverBaseTypeLexicalContextInvariant", typeReceiverPlain, typeReceiverSharedBase, "ProbeOriginStaticBaseMember");
+            AddExpected(checks, "SemanticOriginQualifiedNameRecoveryCurrentTypeObserved", qualifiedNameRecovery, "ProbeOriginRecoveryCurrentMember", CompletionSemanticOriginKind.CurrentType, 0);
+            AddExpected(checks, "SemanticOriginQualifiedNameRecoveryBaseTypeObserved", qualifiedNameRecovery, "ProbeOriginRecoveryBaseMember", CompletionSemanticOriginKind.BaseType, 1);
+            AddExpected(checks, "SemanticOriginQualifiedNameTypeRecoveryCurrentTypeObserved", qualifiedNameTypeRecovery, "ProbeOriginStaticCurrentMember", CompletionSemanticOriginKind.CurrentType, 0);
+            AddExpected(checks, "SemanticOriginQualifiedNameTypeRecoveryBaseTypeObserved", qualifiedNameTypeRecovery, "ProbeOriginStaticBaseMember", CompletionSemanticOriginKind.BaseType, 1);
             AddExpected(checks, "SemanticOriginFrameworkObserved", framework, "Length", CompletionSemanticOriginKind.FrameworkOrOther, null);
 
             CompletionItemSummary? keywordItem = GetUnique(keyword, "return", out bool keywordUnique);
@@ -133,6 +159,29 @@ internal static class CompletionSemanticOriginScenario
             checkName,
             passed,
             item is null ? $"label={label}; item=<missing-or-duplicate>; {Describe(response)}" : DescribeItem(item)));
+    }
+
+    private static void AddMatchingEvidence(
+        List<ProbeCheckResult> checks,
+        string checkName,
+        CompletionRequestResult firstResponse,
+        CompletionRequestResult secondResponse,
+        string label)
+    {
+        CompletionItemSummary? first = GetUnique(firstResponse, label, out bool firstUnique);
+        CompletionItemSummary? second = GetUnique(secondResponse, label, out bool secondUnique);
+        bool passed = firstUnique && secondUnique
+            && first is not null
+            && second is not null
+            && !first.SemanticOriginMetadataMalformed
+            && !second.SemanticOriginMetadataMalformed
+            && first.SemanticOrigin == second.SemanticOrigin
+            && first.InheritanceDepth == second.InheritanceDepth;
+
+        string details = first is null || second is null
+            ? $"label={label}; first={(first is null ? "<missing-or-duplicate>" : DescribeItem(first))}; second={(second is null ? "<missing-or-duplicate>" : DescribeItem(second))}"
+            : $"label={label}; first={DescribeItem(first)}; second={DescribeItem(second)}";
+        checks.Add(new ProbeCheckResult(checkName, passed, details));
     }
 
     private static CompletionItemSummary? GetUnique(CompletionRequestResult response, string label, out bool unique)
@@ -179,6 +228,42 @@ class ProbeOriginOtherUser
     public int ProbeOriginOtherUserMember { get; }
 }
 
+class ProbeOriginRecoveryBase
+{
+    public void ProbeOriginRecoveryBaseMember() { }
+}
+
+class ProbeOriginRecoveryReceiver : ProbeOriginRecoveryBase
+{
+    public void ProbeOriginRecoveryCurrentMember() { }
+}
+
+class ProbeOriginSharedBase
+{
+    public static void ProbeOriginStaticBaseMember() { }
+}
+
+class ProbeOriginStaticOwner : ProbeOriginSharedBase
+{
+    public static ProbeOriginStaticOwner ProbeOriginStaticCurrentMember => new();
+}
+
+class ProbeOriginPlainConsumer
+{
+    void TypeReceiver()
+    {
+        _ = ProbeOriginStaticOwner.ProbeOrigin/*SE_ORIGIN_TYPE_RECEIVER_PLAIN*/;
+    }
+}
+
+class ProbeOriginSharedBaseConsumer : ProbeOriginSharedBase
+{
+    void TypeReceiver()
+    {
+        _ = ProbeOriginStaticOwner.ProbeOrigin/*SE_ORIGIN_TYPE_RECEIVER_SHARED_BASE*/;
+    }
+}
+
 static class ProbeOriginExtensions
 {
     public static void ProbeOriginExtension(this ProbeOriginOtherUser value) { }
@@ -200,6 +285,19 @@ class ProbeOriginDerived : ProbeOriginBase
         _ = other.ProbeOrigin/*SE_ORIGIN_OTHER*/;
     }
 
+    void QualifiedNameRecovery()
+    {
+        ProbeOriginRecoveryReceiver recovery = new();
+        recovery./*SE_ORIGIN_QUALIFIED_NAME_RECOVERY*/
+        var x = 1;
+    }
+
+    void QualifiedNameTypeRecovery()
+    {
+        ProbeOriginStaticOwner./*SE_ORIGIN_QUALIFIED_NAME_TYPE_RECOVERY*/
+        var x = 1;
+    }
+
     void Framework(string frameworkValue)
     {
         _ = frameworkValue.Len/*SE_ORIGIN_FRAMEWORK*/;
@@ -212,7 +310,15 @@ class ProbeOriginDerived : ProbeOriginBase
 }
 """;
 
-        string[] markerNames = ["UNQUALIFIED", "OTHER", "FRAMEWORK", "KEYWORD"];
+        string[] markerNames = [
+            "UNQUALIFIED",
+            "OTHER",
+            "TYPE_RECEIVER_PLAIN",
+            "TYPE_RECEIVER_SHARED_BASE",
+            "QUALIFIED_NAME_RECOVERY",
+            "QUALIFIED_NAME_TYPE_RECOVERY",
+            "FRAMEWORK",
+            "KEYWORD"];
         Dictionary<string, int> originalIndices = new(StringComparer.Ordinal);
         foreach (string name in markerNames)
         {

@@ -2,10 +2,10 @@ Product:
 Microsoft.CodeAnalysis.LanguageServer
 
 Distribution identity:
-SystemExplorer patched private Roslyn Language Server win-x64 v6
+SystemExplorer patched private Roslyn Language Server win-x64 v9
 
 Stable distribution id:
-roslyn-3aeb96c9-systemexplorer-8dd66da05d85-win-x64-v6
+roslyn-3aeb96c9-systemexplorer-2b9ee3aff616-win-x64-v9
 
 Upstream repository:
 dotnet/roslyn
@@ -53,33 +53,51 @@ patches/0006-Warm-SystemExplorer-import-completion-during-semantic-readiness.pat
 SystemExplorer import-completion semantic-readiness warm-up canonical patch SHA-256:
 8DD66DA05D857ECB0737973C343F04A9D20BB7B4C35DA5A010E9CA4109405524
 
+Receiver-relative completion semantic-origin canonical patch:
+patches/0007-Classify-member-completion-relative-to-receiver-type.patch
+
+Receiver-relative completion semantic-origin canonical patch SHA-256:
+CD4F905C4B2B60CEC000DCAAD83241D18D151EDB1AFF625F4588EFFCC180FE3C
+
+Named-type receiver completion semantic-origin canonical patch:
+patches/0008-Classify-static-member-completion-relative-to-type-receiver.patch
+
+Named-type receiver completion semantic-origin canonical patch SHA-256:
+DF87DA9CF8F7A02217E71341734AE892D653506838680A2768C1177782FBD400
+
+Qualified-name receiver-recovery canonical patch:
+patches/0009-Preserve-receiver-relative-completion-through-qualified-name-recovery.patch
+
+Qualified-name receiver-recovery canonical patch SHA-256:
+2B9EE3AFF616702AC2B40A3FC1BA70EEDB81C006D891F144B0580C3BA53B4FFD
+
 Canonical production server archive:
-roslyn-import-completion-readiness-server.zip
+roslyn-qualified-name-receiver-recovery-server.zip
 
 Canonical production server archive SHA-256:
-63C4F36BED868F144E97D1C3F2B2F82C9C3CD3A0C581126A9CB552E2C4E99C1B
+4EA2518EDB9A15445D96E2A832C2988130D5A998BFE1631B791D7CDD953FECFE
 
 Canonical production server archive size:
-44062998 bytes
+44064023 bytes
 
 Microsoft.CodeAnalysis.LanguageServer.dll SHA-256:
-D085B09DA0A2D0B636C898B745D185C0739443CDCAF35F7A329649880772C243
+0B7928B1A76CF4D842622A0BE97C7858FBD9F65ABB0B71FF0940FD7B0BD69F68
 
 Microsoft.CodeAnalysis.Features.dll SHA-256:
-2E7E23515CC2C42DBDA8722BA1F00A9DDBF69619298AFC5CA93C3B4647935D85
+8F67305F8F586D35F4DA5E186840D5CDA806411BF43155A43BC02798A45B3C6D
 
 Microsoft.CodeAnalysis.LanguageServer.Protocol.dll SHA-256:
-89534EF1B6F5E1D439D4356772D93638B396E1EDF3BA36AA19934A705C72891C
+A645F0EF5076A779864AD571163FA895BE25B0CF93E100C964F5FFD26307CCCF
 
 Redistribution license provenance:
-LICENSE.txt is preserved byte-for-byte from the verified current V5 Service.ThirdParty.zip and corresponds to pinned Roslyn repository root License.txt (Git blob a616ed188dfce68ee308f674350ad242d8588c2b).
+LICENSE.txt is preserved byte-for-byte from the verified current V8 Service.ThirdParty.zip and corresponds to pinned Roslyn repository root License.txt (Git blob a616ed188dfce68ee308f674350ad242d8588c2b).
 LICENSE.txt SHA-256:
 AE48DF11A335DC1A615F4F938B69CBA73BCF4485C4F97AF49B38EFB0F216353B
 
 ThirdParty notices provenance:
-ThirdPartyNotices.rtf is preserved byte-for-byte from the verified current V5 Service.ThirdParty.zip and corresponds to src/NuGet/ThirdPartyNotices.rtf at the pinned Roslyn commit (Git blob 1e4323dea600de34692caf3b4b844b7321b03407).
+ThirdPartyNotices.rtf is preserved byte-for-byte from the verified current V8 Service.ThirdParty.zip and corresponds to src/NuGet/ThirdPartyNotices.rtf at the pinned Roslyn commit (Git blob 1e4323dea600de34692caf3b4b844b7321b03407).
 ThirdPartyNotices.rtf SHA-256:
 EF4678850E7E3AAF9297F07E5C4060D477854E545CCF8E2EF8452D65A7B2EFAF
 
-This is a private SystemExplorer production build from the pinned Roslyn source commit plus canonical 0001, canonical 0002, canonical 0003, canonical 0004, canonical 0005, and canonical 0006.
+This is a private SystemExplorer production build from the pinned Roslyn source commit plus canonical 0001, canonical 0002, canonical 0003, canonical 0004, canonical 0005, canonical 0006, canonical 0007, canonical 0008, and canonical 0009.
 It is not the unmodified official roslyn-language-server 5.12.0-1.26426.8 package runtime.

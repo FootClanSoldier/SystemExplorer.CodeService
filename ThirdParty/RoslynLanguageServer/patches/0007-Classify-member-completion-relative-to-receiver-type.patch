@@ -1,0 +1,304 @@
+diff --git a/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs b/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs
+--- a/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs
++++ b/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs
+@@ -174,6 +174,7 @@
+ 
+         using var _ = ArrayBuilder<CompletionItem>.GetInstance(out var itemListBuilder);
+         var typeConvertibilityCache = new Dictionary<ITypeSymbol, bool>(SymbolEqualityComparer.Default);
++        var systemExplorerExplicitReceiverAnchorCache = new Dictionary<TSyntaxContext, INamedTypeSymbol?>();
+ 
+         foreach (var symbolGroup in symbolGroups)
+         {
+@@ -197,6 +198,12 @@
+             {
+                 var includeItemInTargetTypedCompletion = false;
+                 var arbitraryFirstContext = contextLookup(symbolList[0]);
++                if (!systemExplorerExplicitReceiverAnchorCache.TryGetValue(arbitraryFirstContext, out var explicitReceiverAnchor))
++                {
++                    explicitReceiverAnchor = SystemExplorerCompletionSemanticOrigin.ResolveExplicitReceiverAnchor(
++                        arbitraryFirstContext, completionContext.CancellationToken);
++                    systemExplorerExplicitReceiverAnchorCache.Add(arbitraryFirstContext, explicitReceiverAnchor);
++                }
+ 
+                 if (completionContext.CompletionOptions.TargetTypedCompletionFilter)
+                 {
+@@ -217,7 +224,8 @@
+                 item = SystemExplorerCompletionSemanticOrigin.Attach(
+                     item,
+                     symbolList.SelectAsArray(static entry => entry.Symbol),
+-                    arbitraryFirstContext);
++                    arbitraryFirstContext,
++                    explicitReceiverAnchor);
+ 
+                 if (includeItemInTargetTypedCompletion)
+                 {
+diff --git a/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
+--- a/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
++++ b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionSemanticOrigin.cs
+@@ -1,5 +1,7 @@
+ using System.Collections.Immutable;
+ using System.Linq;
++using System.Threading;
++using Microsoft.CodeAnalysis.LanguageService;
+ using Microsoft.CodeAnalysis.Shared.Extensions.ContextQuery;
+ 
+ namespace Microsoft.CodeAnalysis.Completion.Providers;
+@@ -9,18 +11,56 @@ internal static class SystemExplorerCompletionSemanticOrigin
+     internal const string OriginPropertyKey = "SystemExplorer.CompletionSemanticOrigin";
+     internal const string InheritanceDepthPropertyKey = "SystemExplorer.CompletionInheritanceDepth";
+ 
++    public static INamedTypeSymbol? ResolveExplicitReceiverAnchor(
++        SyntaxContext context,
++        CancellationToken cancellationToken)
++    {
++        if (!context.IsRightOfNameSeparator)
++            return null;
++
++        var syntaxFacts = context.GetRequiredLanguageService<ISyntaxFactsService>();
++        var memberAccessExpression = context.TargetToken.Parent;
++        if (!syntaxFacts.IsSimpleMemberAccessExpression(memberAccessExpression))
++            return null;
++
++        var receiverExpression = syntaxFacts.GetExpressionOfMemberAccessExpression(
++            memberAccessExpression, allowImplicitTarget: false);
++        if (receiverExpression is null
++            || syntaxFacts.IsThisExpression(receiverExpression)
++            || syntaxFacts.IsBaseExpression(receiverExpression))
++        {
++            return null;
++        }
++
++        var receiverSymbolInfo = context.SemanticModel.GetSymbolInfo(receiverExpression, cancellationToken);
++        if (IsNamespaceOrTypeAuthority(receiverSymbolInfo.Symbol)
++            || receiverSymbolInfo.CandidateSymbols.Any(IsNamespaceOrTypeAuthority))
++        {
++            return null;
++        }
++
++        return context.SemanticModel.GetTypeInfo(receiverExpression, cancellationToken).Type is INamedTypeSymbol
++        {
++            TypeKind: not TypeKind.Error
++        } receiverType
++            ? receiverType
++            : null;
++    }
++
+     public static CompletionItem Attach(
+         CompletionItem item,
+         ImmutableArray<ISymbol> symbols,
+-        SyntaxContext context)
++        SyntaxContext context,
++        INamedTypeSymbol? explicitReceiverAnchor)
+     {
+         if (symbols.IsDefaultOrEmpty)
+             return AttachEvidence(item, new("Unknown", null));
+ 
++        var semanticAnchor = explicitReceiverAnchor ?? GetLexicalContainingType(context.SemanticModel, context.Position);
+         OriginEvidence? aggregate = null;
+         foreach (ISymbol symbol in symbols)
+         {
+-            OriginEvidence current = Classify(symbol, context);
++            OriginEvidence current = Classify(symbol, semanticAnchor);
+             if (aggregate is null)
+             {
+                 aggregate = current;
+@@ -47,7 +87,7 @@ internal static class SystemExplorerCompletionSemanticOrigin
+             : item;
+     }
+ 
+-    private static OriginEvidence Classify(ISymbol symbol, SyntaxContext context)
++    private static OriginEvidence Classify(ISymbol symbol, INamedTypeSymbol? semanticAnchor)
+     {
+         if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol
+             || symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction })
+@@ -59,16 +99,15 @@ internal static class SystemExplorerCompletionSemanticOrigin
+             return ClassifyDeclarationAuthority(reduced.ReducedFrom);
+ 
+         ISymbol declaration = symbol;
+-        INamedTypeSymbol? lexicalType = GetLexicalContainingType(context.SemanticModel, context.Position);
+-        if (declaration.ContainingType is INamedTypeSymbol containingType && lexicalType is not null)
++        if (declaration.ContainingType is INamedTypeSymbol containingType && semanticAnchor is not null)
+         {
+             INamedTypeSymbol declarationType = containingType.OriginalDefinition;
+-            INamedTypeSymbol current = lexicalType.OriginalDefinition;
++            INamedTypeSymbol current = semanticAnchor.OriginalDefinition;
+             if (SymbolEqualityComparer.Default.Equals(declarationType, current))
+                 return new("CurrentType", 0);
+ 
+             int depth = 1;
+-            for (INamedTypeSymbol? baseType = lexicalType.BaseType; baseType is not null; baseType = baseType.BaseType, depth++)
++            for (INamedTypeSymbol? baseType = semanticAnchor.BaseType; baseType is not null; baseType = baseType.BaseType, depth++)
+             {
+                 if (SymbolEqualityComparer.Default.Equals(declarationType, baseType.OriginalDefinition))
+                     return new("BaseType", depth);
+@@ -78,6 +117,10 @@ internal static class SystemExplorerCompletionSemanticOrigin
+         return ClassifyDeclarationAuthority(declaration);
+     }
+ 
++    private static bool IsNamespaceOrTypeAuthority(ISymbol? symbol)
++        => symbol is INamespaceSymbol or INamedTypeSymbol
++            || symbol is IAliasSymbol { Target: INamespaceOrTypeSymbol };
++
+     private static OriginEvidence ClassifyDeclarationAuthority(ISymbol declaration)
+     {
+         if (declaration.DeclaringSyntaxReferences.Length > 0 || declaration.Locations.Any(static location => location.IsInSource))
+diff --git a/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs b/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
+--- a/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
++++ b/src/EditorFeatures/CSharpTest/Completion/CompletionServiceTests.cs
+@@ -473,4 +473,156 @@
+         Assert.Contains("ProbeUnsavedMember", labels);
+         Assert.DoesNotContain("ProbeDiskMember", labels);
+     }
++
++    [Fact]
++    public async Task CompletionSemanticOriginUsesExplicitReceiverTypeForMemberAccess()
++    {
++        var completionList = await GetSystemExplorerCompletionListAsync("""
++            class ReceiverBase2
++            {
++                public void DeepMember() { }
++            }
++
++            class ReceiverBase1 : ReceiverBase2
++            {
++                public void NearMember() { }
++            }
++
++            class Player : ReceiverBase1
++            {
++                public void OwnMember() { }
++            }
++
++            class UnrelatedLexicalType
++            {
++                void M(Player p)
++                {
++                    p.$$
++                }
++            }
++            """);
++
++        AssertSystemExplorerCompletionEvidence(completionList, "OwnMember", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(completionList, "NearMember", "BaseType", "1");
++        AssertSystemExplorerCompletionEvidence(completionList, "DeepMember", "BaseType", "2");
++        AssertSystemExplorerCompletionEvidence(completionList, "GetType", "BaseType", "3");
++    }
++
++    [Fact]
++    public async Task CompletionSemanticOriginPreservesLexicalAnchorForThisMemberAccess()
++    {
++        var completionList = await GetSystemExplorerCompletionListAsync("""
++            class Base
++            {
++                public void BaseMember() { }
++            }
++
++            class Derived : Base
++            {
++                public void OwnMember() { }
++
++                void M()
++                {
++                    this.$$
++                }
++            }
++            """);
++
++        AssertSystemExplorerCompletionEvidence(completionList, "OwnMember", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(completionList, "BaseMember", "BaseType", "1");
++    }
++
++    [Fact]
++    public async Task CompletionSemanticOriginPreservesLexicalAnchorForUnqualifiedCompletion()
++    {
++        var completionList = await GetSystemExplorerCompletionListAsync("""
++            class Base
++            {
++                public void BaseMember() { }
++            }
++
++            class Derived : Base
++            {
++                public void OwnMember() { }
++
++                void M()
++                {
++                    $$
++                }
++            }
++            """);
++
++        AssertSystemExplorerCompletionEvidence(completionList, "OwnMember", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(completionList, "BaseMember", "BaseType", "1");
++    }
++
++    [Fact]
++    public async Task CompletionSemanticOriginUsesFullChainedReceiverTypeForMemberAccess()
++    {
++        var completionList = await GetSystemExplorerCompletionListAsync("""
++            class SoundRefsBase
++            {
++                public void BaseSoundMember() { }
++            }
++
++            class SoundRefs : SoundRefsBase
++            {
++                public void AmbientPlayer() { }
++                public void MusicPlayer() { }
++                public void NpcSoundPlayer() { }
++            }
++
++            class AppRootState
++            {
++                public SoundRefs SoundRefs { get; }
++            }
++
++            class AppRoot
++            {
++                public static AppRootState Instance { get; }
++            }
++
++            class UnrelatedLexicalType
++            {
++                void M()
++                {
++                    AppRoot.Instance.SoundRefs.$$
++                }
++            }
++            """);
++
++        AssertSystemExplorerCompletionEvidence(completionList, "AmbientPlayer", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(completionList, "MusicPlayer", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(completionList, "NpcSoundPlayer", "CurrentType", "0");
++        AssertSystemExplorerCompletionEvidence(completionList, "BaseSoundMember", "BaseType", "1");
++        AssertSystemExplorerCompletionEvidence(completionList, "GetType", "BaseType", "2");
++    }
++
++    private static async Task<CompletionList> GetSystemExplorerCompletionListAsync(string markup)
++    {
++        MarkupTestFile.GetPosition(markup.NormalizeLineEndings(), out var source, out int? position);
++
++        using var workspace = WorkspaceTestUtilities.CreateWorkspaceWithPartialSemantics();
++        var project = SolutionUtilities.AddEmptyProject(workspace.CurrentSolution)
++            .AddMetadataReferences(TargetFrameworkUtil.GetReferences(TargetFramework.Mscorlib40))
++            .AddDocument("Test.cs", source, filePath: "Test.cs").Project;
++
++        Assert.True(workspace.SetCurrentSolution(_ => project.Solution, WorkspaceChangeKind.SolutionChanged));
++
++        var document = workspace.CurrentSolution.Projects.Single().Documents.Single();
++        var completionService = document.GetLanguageService<CompletionService>();
++        return await completionService.GetCompletionsAsync(
++            document, position.Value, CompletionOptions.Default, OptionSet.Empty);
++    }
++
++    private static void AssertSystemExplorerCompletionEvidence(
++        CompletionList completionList,
++        string displayText,
++        string expectedOrigin,
++        string expectedDepth)
++    {
++        var item = completionList.ItemsList.Single(item => item.DisplayText == displayText);
++        Assert.Equal(expectedOrigin, item.Properties["SystemExplorer.CompletionSemanticOrigin"]);
++        Assert.Equal(expectedDepth, item.Properties["SystemExplorer.CompletionInheritanceDepth"]);
++    }
+ }

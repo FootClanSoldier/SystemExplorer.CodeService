@@ -10,6 +10,10 @@ internal sealed record RoslynClientInfo(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("version")] string Version);
 
+internal sealed record RoslynInitializationOptions(
+    [property: JsonPropertyName("_systemExplorer_importCompletionExcludedPathPrefixes")]
+    IReadOnlyList<string> ImportCompletionExcludedPathPrefixes);
+
 internal sealed class RoslynInitializeParams
 {
     [JsonPropertyName("processId")]
@@ -26,6 +30,9 @@ internal sealed class RoslynInitializeParams
 
     [JsonPropertyName("capabilities")]
     public required object Capabilities { get; init; }
+
+    [JsonPropertyName("initializationOptions")]
+    public required RoslynInitializationOptions InitializationOptions { get; init; }
 
     [JsonPropertyName("trace")]
     public string Trace { get; init; } = "off";

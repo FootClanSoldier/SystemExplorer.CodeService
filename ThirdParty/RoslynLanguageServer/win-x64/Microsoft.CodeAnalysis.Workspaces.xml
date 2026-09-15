@@ -18810,6 +18810,13 @@
             Submission projects can reference at most one other submission project. Regular projects can't reference any.
             </summary>
         </member>
+        <member name="F:Microsoft.CodeAnalysis.Solution._systemExplorerCompletionSourceProjectionCache">
+            <summary>
+            Completion-only source projections for this immutable Solution snapshot, keyed by exclusion-set identity.
+            This cache is intentionally separate from both frozen-partial caches.  A new immutable Solution snapshot gets
+            a fresh cache, while a projected Solution is seeded with its own checksum so projection-of-projection is a no-op.
+            </summary>
+        </member>
         <member name="F:Microsoft.CodeAnalysis.Solution._activeSemanticModels">
             <summary>
             Strongly held reference to the semantic models for the active document (and its related documents linked into
@@ -20343,6 +20350,13 @@
             errors. If https://github.com/dotnet/roslyn/issues/56619 is addressed, we can potentially match the compiler
             behavior by taking a different approach here.
             </remarks>
+        </member>
+        <member name="T:Microsoft.CodeAnalysis.SystemExplorerCompletionSourcePathExclusions">
+            <summary>
+            Immutable SystemExplorer completion-only source exclusion configuration.  Prefix normalization is owned by the
+            language-server initialize path; this type canonicalizes set identity and performs allocation-free document-path
+            classification in completion projection hot paths.
+            </summary>
         </member>
         <member name="T:Microsoft.CodeAnalysis.TextAndVersion">
             <summary>

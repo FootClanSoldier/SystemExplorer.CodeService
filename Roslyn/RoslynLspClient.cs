@@ -14,6 +14,8 @@ internal sealed class RoslynLspClient : IAsyncDisposable
     private const string SystemExplorerCompletionSemanticOriginPropertyName = "_systemExplorer_completionSemanticOrigin";
     private const string SystemExplorerCompletionInheritanceDepthPropertyName = "_systemExplorer_completionInheritanceDepth";
     private const string SystemExplorerCompletionRequiresImportPropertyName = "_systemExplorer_completionRequiresImport";
+    private const string SystemExplorerCompletionMethodHasParametersPropertyName = "_systemExplorer_completionMethodHasParameters";
+    private const int MaxImportCompletionExcludedPathPrefixLength = 4096;
 
     private readonly RoslynLanguageServerProcess _process;
     private readonly string _serviceVersion;
@@ -69,6 +71,7 @@ internal sealed class RoslynLspClient : IAsyncDisposable
             RootUri = rootUri,
             WorkspaceFolders = [new RoslynWorkspaceFolder(rootUri, workspaceName)],
             Capabilities = CreateClientCapabilities(),
+            InitializationOptions = CreateInitializationOptions(workspaceIdentity),
         };
 
         using CancellationTokenSource deadline =
@@ -540,6 +543,11 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                 return RoslynCompletionClientResult.Malformed(rawItemCount);
             }
 
+            if (!TryNormalizeCompletionMethodShapeMetadata(item, out bool? methodHasParameters))
+            {
+                return RoslynCompletionClientResult.Malformed(rawItemCount);
+            }
+
             string filterText = label;
             if (item.TryGetProperty("filterText", out JsonElement filterTextElement)
                 && filterTextElement.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
@@ -770,7 +778,14 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                 continue;
             }
 
-            if (!TryGetBoundedUtf8ByteCount(label, DocumentCompletionLimits.MaxDisplayTextUtf8Bytes, out int ordinaryLabelBytes)
+            string displayText = methodHasParameters switch
+            {
+                false => string.Concat(label, "()"),
+                true => string.Concat(label, "(…)"),
+                null => label,
+            };
+
+            if (!TryGetBoundedUtf8ByteCount(displayText, DocumentCompletionLimits.MaxDisplayTextUtf8Bytes, out int ordinaryDisplayTextBytes)
                 || !TryGetBoundedUtf8ByteCount(insertText, DocumentCompletionLimits.MaxInsertTextUtf8Bytes, out int insertTextBytes)
                 || !TryGetBoundedUtf8ByteCount(filterText, DocumentCompletionLimits.MaxFilterTextUtf8Bytes, out int ordinaryFilterTextBytes)
                 || !TryGetBoundedUtf8ByteCount(sortText, DocumentCompletionLimits.MaxSortTextUtf8Bytes, out int ordinarySortTextBytes))
@@ -779,7 +794,7 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                 continue;
             }
 
-            int ordinaryItemTextBytes = checked(ordinaryLabelBytes + insertTextBytes + ordinaryFilterTextBytes + ordinarySortTextBytes);
+            int ordinaryItemTextBytes = checked(ordinaryDisplayTextBytes + insertTextBytes + ordinaryFilterTextBytes + ordinarySortTextBytes);
             if (normalizedTextUtf8Bytes > DocumentCompletionLimits.MaxNormalizedCompletionTextUtf8Bytes - ordinaryItemTextBytes)
             {
                 isIncomplete = true;
@@ -787,7 +802,7 @@ internal sealed class RoslynLspClient : IAsyncDisposable
             }
 
             normalized.Add(RoslynCompletionItem.Direct(
-                label,
+                displayText,
                 insertText,
                 kind,
                 filterText,
@@ -1083,6 +1098,25 @@ internal sealed class RoslynLspClient : IAsyncDisposable
         return true;
     }
 
+    private static bool TryNormalizeCompletionMethodShapeMetadata(
+        JsonElement item,
+        out bool? methodHasParameters)
+    {
+        methodHasParameters = null;
+        if (!item.TryGetProperty(SystemExplorerCompletionMethodHasParametersPropertyName, out JsonElement methodHasParametersElement))
+        {
+            return true;
+        }
+
+        if (methodHasParametersElement.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
+        {
+            return false;
+        }
+
+        methodHasParameters = methodHasParametersElement.GetBoolean();
+        return true;
+    }
+
     private static bool TryNormalizeSemanticOriginMetadata(
         JsonElement item,
         out CompletionSemanticOrigin semanticOrigin,
@@ -1226,6 +1260,19 @@ internal sealed class RoslynLspClient : IAsyncDisposable
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    private static RoslynInitializationOptions CreateInitializationOptions(WorkspaceIdentity workspaceIdentity)
+    {
+        string systemExplorerPrefix =
+            WorkspaceProjectPathClassifier.GetSystemExplorerAbsoluteDirectoryPrefix(workspaceIdentity);
+        if (systemExplorerPrefix.Length > MaxImportCompletionExcludedPathPrefixLength)
+        {
+            throw new InvalidOperationException(
+                "System Explorer import-completion exclusion path exceeds the private Roslyn path bound.");
+        }
+
+        return new RoslynInitializationOptions([systemExplorerPrefix]);
     }
 
     private static object CreateClientCapabilities()

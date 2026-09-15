@@ -1,0 +1,190 @@
+diff --git a/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs b/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs
+--- a/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs
++++ b/src/Features/Core/Portable/Completion/Providers/AbstractSymbolCompletionProvider.cs
+@@ -224,8 +224,11 @@ internal abstract partial class AbstractSymbolCompletionProvider<TSyntaxContext>
+                 item = SystemExplorerCompletionSemanticOrigin.Attach(
+                     item,
+                     symbolList.SelectAsArray(static entry => entry.Symbol),
+                     arbitraryFirstContext,
+                     explicitReceiverAnchor);
++                item = SystemExplorerCompletionMethodShape.Attach(
++                    item,
++                    symbolList.SelectAsArray(static entry => entry.Symbol));
+ 
+                 if (includeItemInTargetTypedCompletion)
+                 {
+diff --git a/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionMethodShape.cs b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionMethodShape.cs
+new file mode 100644
+--- /dev/null
++++ b/src/Features/Core/Portable/Completion/Providers/SystemExplorerCompletionMethodShape.cs
+@@ -0,0 +1,34 @@
++﻿// Licensed to the .NET Foundation under one or more agreements.
++// The .NET Foundation licenses this file to you under the MIT license.
++// See the LICENSE file in the project root for more information.
++
++using System.Collections.Immutable;
++
++namespace Microsoft.CodeAnalysis.Completion.Providers;
++
++internal static class SystemExplorerCompletionMethodShape
++{
++    internal const string MethodHasParametersPropertyKey = "SystemExplorer.CompletionMethodHasParameters";
++
++    public static CompletionItem Attach(
++        CompletionItem item,
++        ImmutableArray<ISymbol> symbols)
++    {
++        if (symbols.IsDefaultOrEmpty)
++            return item;
++
++        var hasParameters = false;
++        foreach (var symbol in symbols)
++        {
++            if (symbol is not IMethodSymbol method)
++                return item;
++
++            if (method.Parameters.Length > 0)
++                hasParameters = true;
++        }
++
++        return item.AddProperty(
++            MethodHasParametersPropertyKey,
++            hasParameters ? bool.TrueString : bool.FalseString);
++    }
++}
+diff --git a/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs b/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs
+--- a/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs
++++ b/src/LanguageServer/Protocol/Handler/Completion/CompletionResultFactory.cs
+@@ -126,6 +126,12 @@ internal static class CompletionResultFactory
+                 if (item.IsComplexTextEdit && item.Flags.IsExpanded())
+                     systemExplorerVsItem.SystemExplorerCompletionRequiresImport = true;
+ 
++                if (item.Properties.TryGetValue("SystemExplorer.CompletionMethodHasParameters", out var systemExplorerMethodHasParametersText)
++                    && bool.TryParse(systemExplorerMethodHasParametersText, out var systemExplorerMethodHasParameters))
++                {
++                    systemExplorerVsItem.SystemExplorerCompletionMethodHasParameters = systemExplorerMethodHasParameters;
++                }
++
+                 if (item.Properties.TryGetValue("SystemExplorer.CompletionSemanticOrigin", out var systemExplorerOrigin))
+                     systemExplorerVsItem.SystemExplorerCompletionSemanticOrigin = systemExplorerOrigin;
+ 
+diff --git a/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs b/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs
+--- a/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs
++++ b/src/LanguageServer/Protocol/Protocol/Internal/VSInternalCompletionItem.cs
+@@ -20,6 +20,7 @@ internal sealed class VSInternalCompletionItem : CompletionItem
+     internal const string SystemExplorerCompletionSemanticOriginSerializedName = "_systemExplorer_completionSemanticOrigin";
+     internal const string SystemExplorerCompletionInheritanceDepthSerializedName = "_systemExplorer_completionInheritanceDepth";
+     internal const string SystemExplorerCompletionRequiresImportSerializedName = "_systemExplorer_completionRequiresImport";
++    internal const string SystemExplorerCompletionMethodHasParametersSerializedName = "_systemExplorer_completionMethodHasParameters";
+ 
+     /// <summary>
+     /// Gets or sets the icon to show for the completion item. In VS, this is more extensive than the completion kind.
+@@ -76,4 +77,8 @@ internal sealed class VSInternalCompletionItem : CompletionItem
+     [JsonPropertyName(SystemExplorerCompletionRequiresImportSerializedName)]
+     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+     public bool SystemExplorerCompletionRequiresImport { get; set; }
++
++    [JsonPropertyName(SystemExplorerCompletionMethodHasParametersSerializedName)]
++    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
++    public bool? SystemExplorerCompletionMethodHasParameters { get; set; }
+ }
+diff --git a/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs b/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs
+--- a/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs
++++ b/src/LanguageServer/Protocol/Protocol/Internal/Efficiency/OptimizedVSCompletionListJsonConverter.cs
+@@ -158,6 +158,11 @@ internal sealed class OptimizedVSCompletionListJsonConverter : JsonConverter<Opt
+             {
+                 writer.WriteNumber(VSInternalCompletionItem.SystemExplorerCompletionInheritanceDepthSerializedName, systemExplorerDepth);
+             }
++
++            if (vsCompletionItem.SystemExplorerCompletionMethodHasParameters is bool systemExplorerMethodHasParameters)
++            {
++                writer.WriteBoolean(VSInternalCompletionItem.SystemExplorerCompletionMethodHasParametersSerializedName, systemExplorerMethodHasParameters);
++            }
+         }
+ 
+         var label = completionItem.Label;
+diff --git a/src/LanguageServer/ProtocolUnitTests/Completion/CompletionTests.cs b/src/LanguageServer/ProtocolUnitTests/Completion/CompletionTests.cs
+--- a/src/LanguageServer/ProtocolUnitTests/Completion/CompletionTests.cs
++++ b/src/LanguageServer/ProtocolUnitTests/Completion/CompletionTests.cs
+@@ -1688,6 +1688,81 @@ public sealed class CompletionTests : AbstractLanguageServerProtocolTests
+         Assert.DoesNotContain("\"_systemExplorer_completionRequiresImport\"", serialized);
+     }
+ 
++    [Theory, CombinatorialData]
++    public async Task TestSystemExplorerCompletionMethodParameterShapeAsync(bool mutatingLspWorkspace)
++    {
++        var markup =
++            """
++            class C
++            {
++                void Parameterless() { }
++                void WithParameter(int value) { }
++                void Mixed() { }
++                void Mixed(int value) { }
++                void GenericParameterless<T>() { }
++                void GenericWithParameter<T>(T value) { }
++                int Property { get; }
++                int Field;
++                class Nested { }
++
++                void Test()
++                {
++                    this.{|caret:|}
++                }
++
++                void TypeTest()
++                {
++                    Nes{|typeCaret:|}
++                }
++            }
++            """;
++
++        await using var testLspServer = await CreateTestLspServerAsync(markup, mutatingLspWorkspace, s_vsCompletionCapabilities);
++        var completionParams = CreateCompletionParams(
++            testLspServer.GetLocations("caret").Single(),
++            invokeKind: LSP.VSInternalCompletionInvokeKind.Explicit,
++            triggerCharacter: "\0",
++            triggerKind: LSP.CompletionTriggerKind.Invoked);
++
++        var results = await RunGetCompletionsAsync(testLspServer, completionParams).ConfigureAwait(false);
++
++        var parameterless = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.Single(item => item.Label == "Parameterless"));
++        Assert.False(Assert.IsType<bool>(parameterless.SystemExplorerCompletionMethodHasParameters));
++
++        var withParameter = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.Single(item => item.Label == "WithParameter"));
++        Assert.True(Assert.IsType<bool>(withParameter.SystemExplorerCompletionMethodHasParameters));
++
++        var mixed = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.Single(item => item.Label == "Mixed"));
++        Assert.True(Assert.IsType<bool>(mixed.SystemExplorerCompletionMethodHasParameters));
++
++        var genericParameterless = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.Single(item => item.Label == "GenericParameterless<>"));
++        Assert.False(Assert.IsType<bool>(genericParameterless.SystemExplorerCompletionMethodHasParameters));
++
++        var genericWithParameter = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.Single(item => item.Label == "GenericWithParameter<>"));
++        Assert.True(Assert.IsType<bool>(genericWithParameter.SystemExplorerCompletionMethodHasParameters));
++
++        var property = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.Single(item => item.Label == "Property"));
++        Assert.Null(property.SystemExplorerCompletionMethodHasParameters);
++
++        var field = Assert.IsType<LSP.VSInternalCompletionItem>(results.Items.Single(item => item.Label == "Field"));
++        Assert.Null(field.SystemExplorerCompletionMethodHasParameters);
++
++        var typeCompletionParams = CreateCompletionParams(
++            testLspServer.GetLocations("typeCaret").Single(),
++            invokeKind: LSP.VSInternalCompletionInvokeKind.Explicit,
++            triggerCharacter: "\0",
++            triggerKind: LSP.CompletionTriggerKind.Invoked);
++        var typeResults = await RunGetCompletionsAsync(testLspServer, typeCompletionParams).ConfigureAwait(false);
++        var type = Assert.IsType<LSP.VSInternalCompletionItem>(typeResults.Items.Single(item => item.Label == "Nested"));
++        Assert.Null(type.SystemExplorerCompletionMethodHasParameters);
++
++        var serialized = JsonSerializer.Serialize(
++            new LSP.OptimizedVSCompletionList((LSP.VSInternalCompletionList)results),
++            ProtocolConversions.LspJsonSerializerOptions);
++        Assert.Contains("\"_systemExplorer_completionMethodHasParameters\":false", serialized);
++        Assert.Contains("\"_systemExplorer_completionMethodHasParameters\":true", serialized);
++    }
++
+     [Theory, CombinatorialData]
+     public async Task TestDoNotProvidePartialMethodTextEditsOrInsertTextAsync(bool mutatingLspWorkspace)
+     {

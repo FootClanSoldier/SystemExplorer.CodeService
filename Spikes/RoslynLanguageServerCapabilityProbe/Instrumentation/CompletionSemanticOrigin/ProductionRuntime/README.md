@@ -1,9 +1,10 @@
 # Production completion semantic-origin runtime reproduction
 
-Current adopted runtime: V9. Use `Build-ProductionQualifiedNameReceiverRecoveryRuntime_v3.cmd` / `.ps1`,
-`README-V9-Builder-v3.txt`, and the bundled corrected canonical `0009-Preserve-receiver-relative-completion-through-qualified-name-recovery.patch`
-for the canonical V9 reproduction path. The materialized V9 runtime is external ThirdParty authority and is not
-embedded in the normal Service source zip.
+Current materialized/adopted runtime: V12. Canonical 0012 method-shape metadata is built into distribution `roslyn-3aeb96c9-systemexplorer-322210505af7-win-x64-v12`; canonical `Service.ThirdParty_V12.zip` SHA-256 is `fbe44840bd389dc1a87d2e2e675add2407518d17dcef3b2cfa69d7155ef1567c`.
+
+Use `Build-ProductionCompletionMethodShapeRuntime_v1.cmd` / `.ps1`, `README-V12-Builder-v1.txt`, and bundled canonical `0012-Expose-SystemExplorer-completion-method-parameter-shape.patch` to promote exact V11 to V12. The V12 builder consumes `Service.ThirdParty_V11.zip` SHA-256 `b36406247f23129a63c7092ea882c01106d2a3c5e5eefc458f7eb84b8d1cda4f`, re-verifies canonical 0001 -> 0011, and applies canonical 0012 SHA-256 `322210505af78564ed4a2ff4f86099abcbafcae304d35f4f417b64f3435205ed`.
+
+For the retained historical V11 reproduction, use `Build-ProductionCompletionSourceExclusionRuntime_v1.cmd` / `.ps1`, `README-V11-Builder-v1.txt`, and canonical `0011-Exclude-configured-source-paths-from-SystemExplorer-completion-source-view.patch`. The materialized V11 runtime is external ThirdParty authority and is not embedded in the normal Service source zip.
 
 The historical material immediately below documents the retained V2 reproduction baseline; later sections inventory newer retained reproduction kits.
 
@@ -93,3 +94,58 @@ produced distribution `roslyn-3aeb96c9-systemexplorer-2b9ee3aff616-win-x64-v9`,
 `Service.ThirdParty_V9.zip` SHA-256 `93fdbbcbbf384f14a72d7ab778dbfa43eb03431db76022aa1487137820572321`, and a full
 `CompletionServiceTests` result of 24 passed / 0 failed / 0 skipped. The retained builder is reproducibility tooling;
 the separate verified `Service.ThirdParty_V9.zip` remains the authoritative ThirdParty payload.
+
+
+## Adopted V10 import-completion path-exclusion reproduction
+
+The current retained V10 one-command builder is:
+
+```text
+Build-ProductionImportCompletionPathExclusionRuntime_v1.cmd
+Build-ProductionImportCompletionPathExclusionRuntime_v1.ps1
+README-V10-Builder-v1.txt
+0010-Exclude-configured-source-paths-from-SystemExplorer-import-completion.patch
+```
+
+It consumes the verified V9 baseline (`Service.ThirdParty_V9.zip` SHA-256
+`93fdbbcbbf384f14a72d7ab778dbfa43eb03431db76022aa1487137820572321`) and canonical 0010
+SHA-256 `6276ff5707ac41f47fab8e8298a226f2486d9ff2746ecec54568a82f1c7caaf6`. The successful materialization
+produced distribution `roslyn-3aeb96c9-systemexplorer-6276ff5707ac-win-x64-v10`,
+`Service.ThirdParty_V10.zip` SHA-256 `aae523641e34bf38543ef1f2a3acb9c30f1a6eceff42d02960a16832535caa3a`, and a full
+`CompletionServiceTests` result of 24 passed / 0 failed / 0 skipped. The retained builder is reproducibility tooling;
+the separate verified `Service.ThirdParty_V10.zip` remains the authoritative ThirdParty payload.
+
+
+## Retained V11 completion-source exclusion reproduction
+
+The retained V11 one-command builder is:
+
+```text
+Build-ProductionCompletionSourceExclusionRuntime_v1.cmd
+Build-ProductionCompletionSourceExclusionRuntime_v1.ps1
+README-V11-Builder-v1.txt
+0011-Exclude-configured-source-paths-from-SystemExplorer-completion-source-view.patch
+```
+
+It consumes exact V10 baseline `Service.ThirdParty_V10.zip` SHA-256
+`aae523641e34bf38543ef1f2a3acb9c30f1a6eceff42d02960a16832535caa3a`, re-verifies canonical `0001 -> 0010`,
+and applies canonical 0011 SHA-256 `aeafddd7b52a8c1b44a455965e7c5d4b48b5e7e795291ea55f1f3bdc3d3ea054` to the
+pinned upstream checkout. The successful materialization produced distribution
+`roslyn-3aeb96c9-systemexplorer-aeafddd7b52a-win-x64-v11`, `Service.ThirdParty_V11.zip` SHA-256
+`b36406247f23129a63c7092ea882c01106d2a3c5e5eefc458f7eb84b8d1cda4f`, and a full `CompletionServiceTests`
+result of 24 passed / 0 failed / 0 skipped. The separate verified `Service.ThirdParty_V11.zip` remains historical V11
+authority; current ThirdParty authority is the separately verified `Service.ThirdParty_V12.zip`. The retained V11
+builder/patch copies here are reproducibility tooling only.
+
+## Adopted V12 completion method-shape reproduction
+
+The V12 source promotion kit is:
+
+```text
+Build-ProductionCompletionMethodShapeRuntime_v1.cmd
+Build-ProductionCompletionMethodShapeRuntime_v1.ps1
+README-V12-Builder-v1.txt
+0012-Expose-SystemExplorer-completion-method-parameter-shape.patch
+```
+
+It consumes exact V11 `Service.ThirdParty_V11.zip` SHA-256 `b36406247f23129a63c7092ea882c01106d2a3c5e5eefc458f7eb84b8d1cda4f`, verifies V11 provenance plus canonical 0001 -> 0011, and applies canonical 0012 SHA-256 `322210505af78564ed4a2ff4f86099abcbafcae304d35f4f417b64f3435205ed`. The successful materialization produced distribution `roslyn-3aeb96c9-systemexplorer-322210505af7-win-x64-v12`, runtime archive SHA-256 `4bb8d44e335cb1ddf7f12874db7ccb9ae6eba05cb996e501087df5805f5b38c0`, and `Service.ThirdParty_V12.zip` SHA-256 `fbe44840bd389dc1a87d2e2e675add2407518d17dcef3b2cfa69d7155ef1567c`. Full C# CompletionServiceTests recorded 24 passed / 0 failed / 0 skipped. The actual DLL hashes emitted by that build are now adopted by `RoslynLanguageServerRuntime.cs` and `SystemExplorer.CodeService.csproj`.

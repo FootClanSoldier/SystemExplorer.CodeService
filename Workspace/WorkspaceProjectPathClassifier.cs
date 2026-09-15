@@ -99,6 +99,19 @@ internal static class WorkspaceProjectPathClassifier
         => relativePath.Replace(Path.DirectorySeparatorChar, '/')
             .Replace(Path.AltDirectorySeparatorChar, '/');
 
+    public static string GetSystemExplorerAbsoluteDirectoryPrefix(WorkspaceIdentity workspaceIdentity)
+    {
+        ArgumentNullException.ThrowIfNull(workspaceIdentity);
+
+        string platformRelativeDirectory =
+            SystemExplorerRelativeDirectory.Replace('/', Path.DirectorySeparatorChar);
+        string absoluteDirectory = Path.GetFullPath(Path.Combine(
+            workspaceIdentity.ProjectRoot,
+            platformRelativeDirectory));
+        string normalizedDirectory = Path.TrimEndingDirectorySeparator(absoluteDirectory);
+        return normalizedDirectory + Path.DirectorySeparatorChar;
+    }
+
     private static bool IsSystemExplorerPath(string normalizedRelativePath)
     {
         if (string.Equals(

@@ -2979,7 +2979,7 @@
             Key is the namespace of the symbol, value is the name of the symbol.
             </summary>
         </member>
-        <member name="M:Microsoft.CodeAnalysis.Completion.Providers.AbstractTypeImportCompletionService.GetUpToDateCacheForProjectAsync(Microsoft.CodeAnalysis.Project,System.Nullable{Microsoft.CodeAnalysis.Completion.Providers.ImportCompletionCommitBehavior},System.Threading.CancellationToken)">
+        <member name="M:Microsoft.CodeAnalysis.Completion.Providers.AbstractTypeImportCompletionService.GetUpToDateCacheForProjectAsync(Microsoft.CodeAnalysis.Project,Microsoft.CodeAnalysis.SystemExplorerCompletionSourcePathExclusions,System.Nullable{Microsoft.CodeAnalysis.Completion.Providers.ImportCompletionCommitBehavior},System.Threading.CancellationToken)">
             <summary>
             Get appropriate completion items for all the visible top level types from given project. 
             This method is intended to be used for getting types from source only, so the project must support compilation. 

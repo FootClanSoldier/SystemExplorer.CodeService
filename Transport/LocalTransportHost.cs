@@ -2394,6 +2394,8 @@ internal sealed class LocalTransportHost : IAsyncDisposable
                 item.Preselect,
                 CompletionSemanticOriginWire.ToWireValue(item.SemanticOrigin),
                 item.InheritanceDepth,
+                item.ContainingNamespace,
+                item.NamespaceDisambiguation,
                 item.RequiresImport,
                 item.CompletionHandle?.ToString("D")))
             .ToArray();

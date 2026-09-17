@@ -24,13 +24,15 @@ internal sealed class RoslynLanguageServerRuntime
     public const string ImportCompletionPathExclusionPatchSha256 = "6276FF5707AC41F47FAB8E8298A226F2486D9FF2746ECEC54568A82F1C7CAAF6";
     public const string CompletionSourceExclusionPatchSha256 = "AEAFDDD7B52A8C1B44A455965E7C5D4B48B5E7E795291EA55F1F3BDC3D3EA054";
     public const string CompletionMethodShapePatchSha256 = "322210505AF78564ED4A2FF4F86099ABCBAFCAE304D35F4F417B64F3435205ED";
+    public const string CompletionContainingNamespacePatchSha256 = "23295A8179B4C02149ED2377A1D9D00AD623F986F7911B5551C90FFECBA85A78";
+    public const string CompletionSameLabelNamedTypeCandidatesPatchSha256 = "1DD7224435BC59CCB616804DC990E7AF1CB438869E0CEE1C4529B82140005CF6";
 
-    // Materialized production identity from the canonical private Roslyn v12 build.
+    // Materialized production identity from the canonical private Roslyn v14 build.
     // Runtime and pack validation both fail closed if these exact binaries are not present.
-    public const string DistributionId = "roslyn-3aeb96c9-systemexplorer-322210505af7-win-x64-v12";
-    public const string LanguageServerDllSha256 = "18D22694B282763AEDFD18A92343D7B97C5BA3B82128C7850BAE90DB2FF84871";
-    public const string FeaturesDllSha256 = "D181C712F006C16F6EA63A04EFFC8FBFECD632E5A75FA6A5F16949EE4D3A0A56";
-    public const string LanguageServerProtocolDllSha256 = "DEC57627912136464BDC2F8957EA12281DAF75AE0C27AB5B31E2EFCE1C9BD5F6";
+    public const string DistributionId = "roslyn-3aeb96c9-systemexplorer-1dd7224435bc-win-x64-v14";
+    public const string LanguageServerDllSha256 = "D87F9BFF2026A545DFC9A3986328BA1549DFFBF02CA6FA3E14C8C75BA6F7714F";
+    public const string FeaturesDllSha256 = "8E9004B65D694B9E97C2D8DC7D810B352C3B4177CA5AAEFF99485A51C1071B80";
+    public const string LanguageServerProtocolDllSha256 = "73682FAAE696F7EB576B310EEE1E615933886F3C7BDDDE683F430604A203B886";
 
     private const string ServerDllFileName = "Microsoft.CodeAnalysis.LanguageServer.dll";
     private const string FeaturesDllFileName = "Microsoft.CodeAnalysis.Features.dll";
@@ -105,6 +107,10 @@ internal sealed class RoslynLanguageServerRuntime
     public string VerifiedCompletionSourceExclusionPatchSha256 => CompletionSourceExclusionPatchSha256;
 
     public string VerifiedCompletionMethodShapePatchSha256 => CompletionMethodShapePatchSha256;
+
+    public string VerifiedCompletionContainingNamespacePatchSha256 => CompletionContainingNamespacePatchSha256;
+
+    public string VerifiedCompletionSameLabelNamedTypeCandidatesPatchSha256 => CompletionSameLabelNamedTypeCandidatesPatchSha256;
 
     public static RoslynLanguageServerRuntimeValidationResult TryValidate(
         string? runtimeDirectory,

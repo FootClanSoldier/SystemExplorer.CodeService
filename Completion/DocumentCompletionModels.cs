@@ -19,6 +19,8 @@ internal sealed record DocumentCompletionItem(
     bool Preselect,
     CompletionSemanticOrigin SemanticOrigin,
     int? InheritanceDepth,
+    string? ContainingNamespace,
+    string? NamespaceDisambiguation,
     bool RequiresImport,
     Guid? CompletionHandle)
 {

@@ -9,7 +9,7 @@ internal static class CodeServiceProtocol
     public const int WorkspaceSchemaVersion = 1;
     public const int DocumentSynchronizationSchemaVersion = 1;
     public const int SemanticReadinessSchemaVersion = 1;
-    public const int CompletionSchemaVersion = 5;
+    public const int CompletionSchemaVersion = 6;
     public const int CompletionResolveSchemaVersion = 1;
     public const string HandshakePath = "/control/handshake";
     public const string WorkspaceInitializePath = "/workspace/initialize";

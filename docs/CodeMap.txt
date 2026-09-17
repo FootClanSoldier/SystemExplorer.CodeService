@@ -924,10 +924,12 @@ Roslyn/
             completion contract 0005 SHA, canonical import-completion readiness 0006 SHA, canonical receiver-relative
             semantic-origin 0007 SHA, canonical named-type receiver semantic-origin 0008 SHA, canonical qualified-name
             receiver-recovery 0009 SHA, canonical import-completion path-exclusion 0010 SHA, canonical completion-source
-            exclusion 0011 SHA, and canonical method-parameter-shape 0012 SHA. The materialized V12 production identity is
-            `roslyn-3aeb96c9-systemexplorer-322210505af7-win-x64-v12`; TryValidate requires the server DLL, Features
-            DLL, LanguageServer.Protocol DLL, deps json, and runtimeconfig json and fails closed on any required-file
-            or pinned-hash mismatch. The pinned V12 DLL hashes are the actual values emitted by the canonical V12 build. RuntimeSource still distinguishes ExplicitOverride from PackagedPrivateRuntime
+            exclusion 0011 SHA, canonical method-parameter-shape 0012 SHA, canonical containing-namespace 0013 SHA, and
+            canonical same-label named-type candidate-preservation 0014 SHA. The materialized V14 production identity is
+            `roslyn-3aeb96c9-systemexplorer-1dd7224435bc-win-x64-v14`; TryValidate requires the server DLL, Features DLL,
+            LanguageServer.Protocol DLL, deps json, and runtimeconfig json and fails closed on any required-file or
+            pinned-hash mismatch. The pinned V14 DLL hashes are the actual values emitted by the canonical V14 build.
+            RuntimeSource still distinguishes ExplicitOverride from PackagedPrivateRuntime
             without making provenance depend on an absolute installed path.
 
     RoslynLanguageServerRuntimeResolver.cs
@@ -941,7 +943,7 @@ Roslyn/
             Packaged support remains exactly OperatingSystem.IsWindows() plus x64 process
             architecture. On Windows x64 the resolver uses only
             AppContext.BaseDirectory/roslyn/win-x64 and validates the complete pinned runtime identity
-            described above. Missing/corrupt packaged payload or any V12 pinned-hash mismatch is a
+            described above. Missing/corrupt packaged payload or any V14 pinned-hash mismatch is a
             RoslynRuntimeProvisioningFailure and service startup exits controlled with code 6.
             Windows ARM64, Linux, macOS and other platforms do not attempt to launch the win-x64
             payload and retain indexing-only service behavior. There is no PATH, global-tool,
@@ -967,14 +969,16 @@ ThirdParty/RoslynLanguageServer/
     patches/0009-Preserve-receiver-relative-completion-through-qualified-name-recovery.patch
     patches/0010-Exclude-configured-source-paths-from-SystemExplorer-import-completion.patch
     patches/0011-Exclude-configured-source-paths-from-SystemExplorer-completion-source-view.patch
-    patches/0012-Expose-SystemExplorer-completion-method-parameter-shape.patch   (adopted V12)
+    patches/0012-Expose-SystemExplorer-completion-method-parameter-shape.patch   (retained in adopted V14)
+    patches/0013-Expose-SystemExplorer-completion-containing-namespace.patch   (retained in adopted V14)
+    patches/0014-Preserve-SystemExplorer-same-label-named-type-completion-candidates.patch   (adopted V14)
     win-x64/**
-        Intentional private redistribution input. The separately verified materialized authority is V12, produced by
-        canonical 0001 through 0012 and identified as
-        `roslyn-3aeb96c9-systemexplorer-322210505af7-win-x64-v12`. SystemExplorer.CodeService.csproj packages that tree
+        Intentional private redistribution input. The separately verified materialized authority is V14, produced by
+        canonical 0001 through 0014 and identified as
+        `roslyn-3aeb96c9-systemexplorer-1dd7224435bc-win-x64-v14`. SystemExplorer.CodeService.csproj packages that tree
         under tools/net10.0/any/roslyn/win-x64 while preserving its relative structure and pins the exact materialized
         LanguageServer/Features/LanguageServer.Protocol DLL hashes. LICENSE.txt and ThirdPartyNotices.rtf remain pinned
-        Roslyn redistribution files. V12 PROVENANCE.txt records pinned upstream, canonical 0001 through 0012 patch
+        Roslyn redistribution files. V14 PROVENANCE.txt records pinned upstream, canonical 0001 through 0014 patch
         identities, distribution/archive identity and runtime assembly hashes. The directory remains the actual
         repository/build/pack input, but normal ChatGPT Service source patch zips omit ThirdParty/.
         `Service.ThirdParty.zip` is the source of truth for third-party bytes/provenance when those
@@ -1021,8 +1025,14 @@ ThirdParty/RoslynLanguageServer/
         field strictly: absent means no method-shape authority; present must be JSON boolean. Only ordinary direct-
         commit items consume it, after commit-safety has been established, to present `label + "()"` for false or
         `label + "(…)"` for true while retaining the original label-derived insertion/filter/sort/resolve authority.
+        Canonical private 0013 additionally projects nullable string
+        `_systemExplorer_completionContainingNamespace` from authoritative named-type semantics. CodeService accepts
+        absent/null as no authority, requires a present value to be a non-empty bounded string, preserves it as raw
+        ContainingNamespace on direct and import candidates, and never reconstructs it from labelDetails/sortText.
+        CompletionNamespaceDisambiguator runs only after final candidate selection and derives NamespaceDisambiguation
+        for same-DisplayText groups with at least two distinct authoritative namespace values.
         The VS capability is consumed by CodeService completion normalization as a fail-closed discriminator
-        for Roslyn items whose commit text edit must be resolved. CodeService does not execute VS completion commands. Under schema v5 it invokes completionItem/resolve only for exactly marked supported named-type
+        for Roslyn items whose commit text edit must be resolved. CodeService does not execute VS completion commands. Under current schema v6 it invokes completionItem/resolve only for exactly marked supported named-type
         import items whose original Roslyn item is retained as bounded opaque resolve authority; non-import
         resolve-on-commit complex items remain fail-closed.
 
@@ -2926,14 +2936,15 @@ Completion/DocumentCompletionModels.cs
 Completion/CompletionResolveModels.cs
 Completion/CompletionResolveHandleStore.cs
 Completion/CompletionCandidateSelector.cs
+Completion/CompletionNamespaceDisambiguator.cs
 Completion/DocumentCompletionHost.cs
 Protocol/CompletionResponses.cs
 Protocol/CompletionResolveResponses.cs
     -> owns authenticated completion/resolve feature admission after transport parsing, exact synchronized-document
-       correlation, one explicit Roslyn completion or resolve query against the pinned V11 runtime, exact pre/post-request
-       stale-result rejection, schema-v5 direct/import commit contracts, a bounded three-observed-batch in-memory opaque
-       resolve store, prefix-aware candidate membership, bounded semantic protected admission/publication, and scalar-only
-       observability.
+       correlation, one explicit Roslyn completion or resolve query against the pinned V14 runtime, exact pre/post-request
+       stale-result rejection, schema-v6 direct/import commit contracts, a bounded three-observed-batch in-memory opaque
+       resolve store, prefix-aware candidate membership, bounded semantic protected admission/publication, post-selection
+       namespace disambiguation from Roslyn-authoritative raw namespace metadata, and scalar-only observability.
     -> owns no editor source text, prefix reconstruction, persistent completion/resolve cache, workspace construction,
        Roslyn process lifetime, presentation/UI state, source-edit application, fuzzy scorer, editor-specific final ranking,
        or pending feature queue. It does own one bounded generation-scoped opportunistic import-resolve warm-up task;
@@ -2975,10 +2986,10 @@ current tracked ordinary source for the requesting project and transitive same-l
 while keeping generators/skeleton creation frozen. Legacy frozen-partial callers retain their existing behavior.
 
 POST /completion
-    -> authenticated schema-v5 feature endpoint with the unchanged schema-v4 request shape: exactly
+    -> authenticated schema-v6 feature endpoint with the unchanged schema-v5 request shape: exactly
        schemaVersion, clientGeneration, epochId, documentPath, clientVersion, line, character, and required prefix.
        Unknown, duplicate, missing, or mistyped properties fail closed; line/character and prefix keep current bounds.
-    -> a well-formed old schema-v4 request returns VersionMismatch; malformed schema-v5 input returns InvalidRequest.
+    -> a well-formed old schema-v5 request returns VersionMismatch; malformed schema-v6 input returns InvalidRequest.
     -> Roslyn normalization preserves ordinary direct-commit items and admits only exactly marked named-type import
        items (Class/Interface/Enum/Struct) that carry per-item data and a bounded opaque full Roslyn completion item.
        Non-import resolve-on-commit, methods/functions, commands, additional edits, snippets and unsupported expanded
@@ -2987,10 +2998,14 @@ POST /completion
        exact-state validation. The store retains at most three observed batches. Only normalized import candidates that
        survive exact post-completion validation receive transient Service-owned Guid handles; registration happens
        before CompletionCandidateSelector. Handles for later-dropped candidates remain bounded and unexposed.
-    -> schema-v5 item shape is explicit: ordinary item => insertText non-empty, requiresImport=false,
-       completionHandle=null; import item => insertText=null, requiresImport=true, completionHandle=canonical Guid D.
-       Raw Roslyn data/resultId never leaves Service. Candidate ranking/membership remains unchanged.
-    -> serialized response retains the exact 4 MiB completion guard. CompletionSchemaVersion is 5 while the
+    -> schema-v6 item shape retains the explicit commit contract: ordinary item => insertText non-empty,
+       requiresImport=false, completionHandle=null; import item => insertText=null, requiresImport=true,
+       completionHandle=canonical Guid D. Raw Roslyn data/resultId never leaves Service. Each item additionally carries
+       nullable containingNamespace plus nullable namespaceDisambiguation. Raw containing namespace is retained for
+       every eligible Roslyn-authoritative named type; disambiguation is derived only after final candidate selection
+       from same-DisplayText groups containing at least two authoritative distinct namespace values.
+       Candidate ranking/membership remains unchanged.
+    -> serialized response retains the exact 4 MiB completion guard. CompletionSchemaVersion is 6 while the
        service/session ProtocolVersion remains 1.
 
 Completion transport chain after this patch:
@@ -3162,7 +3177,7 @@ RoslynLspClient production completion:
        normal remote request errors do not automatically fault an otherwise live Roslyn generation;
        verified connection/process/transport failures retain exact-generation fault authority.
 
-Private Roslyn V12 materialized/adopted production contract:
+Private Roslyn V14 materialized/adopted production contract:
     -> canonical source chain is pinned upstream 3aeb96c9... + unchanged semantic-reuse 0001 SHA
        11076630... + completion semantic-origin 0002 SHA 6818cc1b... + current-source frozen-partial
        completion 0003 SHA 17827506D20D05B63764C3959A698E35584776FC5C3FB559E70B9B9FFCBDB4E6
@@ -3182,7 +3197,11 @@ Private Roslyn V12 materialized/adopted production contract:
        + completion-source exclusion 0011 SHA
        AEAFDDD7B52A8C1B44A455965E7C5D4B48B5E7E795291EA55F1F3BDC3D3EA054
        + completion method-parameter-shape 0012 SHA
-       322210505AF78564ED4A2FF4F86099ABCBAFCAE304D35F4F417B64F3435205ED.
+       322210505AF78564ED4A2FF4F86099ABCBAFCAE304D35F4F417B64F3435205ED
+       + completion containing-namespace 0013 SHA
+       23295A8179B4C02149ED2377A1D9D00AD623F986F7911B5551C90FFECBA85A78
+       + same-label named-type candidate-preservation 0014 SHA
+       1DD7224435BC59CCB616804DC990E7AF1CB438869E0CEE1C4529B82140005CF6.
     -> 0003 remains the correctness authority: requesting-project current ordinary source plus transitive
        same-language compilation dependencies are restored after frozen-partial construction; legacy frozen
        partial remains unchanged and generators are not forced.
@@ -3193,7 +3212,7 @@ Private Roslyn V12 materialized/adopted production contract:
        legacy freeze + 0003 repair path.
     -> 0005 leaves VS-internal completion as the transport shape and adds a default-off custom capability plus
        `_systemExplorer_completionRequiresImport` discriminator for expanded/import complex edits. Service schema-v5
-       adoption transports supported named-type import candidates through an opaque-handle resolve contract while
+       introduced the opaque-handle import contract and current schema-v6 retains it while transporting supported named-type import candidates through an opaque-handle resolve contract while
        keeping Roslyn as source-edit authority; other complex completion remains fail-closed.
     -> 0006 extends only SystemExplorer-opted-in public document diagnostics after normal diagnostic computation.
        It preloads imported completion providers, triggers project provider loading, and awaits TypeImport cache
@@ -3216,23 +3235,44 @@ Private Roslyn V12 materialized/adopted production contract:
        parameters are never manually counted. CompletionResultFactory projects it to nullable
        `_systemExplorer_completionMethodHasParameters`, and OptimizedVSCompletionListJsonConverter explicitly writes
        both false and true.
+    -> 0013 is metadata-only in Roslyn. At the same grouped-symbol authority, only non-empty all-INamedTypeSymbol
+       groups whose represented types agree on one non-global containing namespace receive
+       `SystemExplorer.CompletionContainingNamespace`; import type completion uses its existing authoritative
+       containingNamespace string. CompletionResultFactory projects nullable
+       `_systemExplorer_completionContainingNamespace`, and the optimized VS converter writes non-null strings directly.
+       CodeService strictly normalizes and preserves this raw semantic metadata independently from UI conflict state.
+    -> 0014 changes only the SystemExplorer-opted-in ordinary same-label named-type path. After existing
+       DeduplicateSymbols(...), a multi-entry list is split by ordinal containing namespace only when every represented
+       symbol is INamedTypeSymbol, every containing namespace is non-global, and at least two distinct namespaces exist.
+       Symbols sharing one namespace stay grouped; methods/mixed kinds/global namespace/same-namespace collisions remain
+       unchanged. The final split list owns DoNotMerge, and each subgroup continues through the existing target-typed,
+       platform, CreateItem and canonical 0013 Attach paths. Service receives the resulting ordinary candidates as normal
+       separate direct items and existing CompletionNamespaceDisambiguator can expose namespaceDisambiguation without a
+       schema or resolve-contract change.
     -> retained historical V11 production evidence remains
        roslyn-3aeb96c9-systemexplorer-aeafddd7b52a-win-x64-v11; canonical Service.ThirdParty_V11.zip
        SHA-256 is B36406247F23129A63C7092EA882C01106D2A3C5E5EEFC458F7EB84B8D1CDA4F. Its exact three DLL hashes remain
-       historical V11 evidence, not current V12 adoption values.
-    -> the canonical V12 builder consumed exact V11, re-hashed 0001->0011, applied 0012 with whitespace-error checking,
-       reran retained/new protocol and completion gates, built one coherent Release LanguageServer, and materialized
-       `Service.ThirdParty_V12.zip` SHA-256 `FBE44840BD389DC1A87D2E2E675ADD2407518D17DCEF3B2CFA69D7155EF1567C`.
-       Current runtime identity is `roslyn-3aeb96c9-systemexplorer-322210505af7-win-x64-v12`; pinned DLL hashes are
-       LanguageServer `18D22694B282763AEDFD18A92343D7B97C5BA3B82128C7850BAE90DB2FF84871`, Features
-       `D181C712F006C16F6EA63A04EFFC8FBFECD632E5A75FA6A5F16949EE4D3A0A56`, and LanguageServer.Protocol
-       `DEC57627912136464BDC2F8957EA12281DAF75AE0C27AB5B31E2EFCE1C9BD5F6`.
-    -> RoslynLanguageServerRuntime exposes canonical 0001 through 0012 identities in the roslyn_runtime_validated
-       diagnostic event, including completionMethodShapePatchSha256 for 0012 alongside completionSourceExclusionPatchSha256
-       for 0011.
-    -> the materializing V12 build passed its fail-closed retained/new SystemExplorer protocol/source gates and full C#
-       CompletionServiceTests class (24/24, 0 failed, 0 skipped), then produced the coherent Release runtime and verified
-       ThirdParty artifact. Historical V11 build evidence remains retained below where explicitly labeled V11.
+       historical V11 evidence, not current V14 adoption values.
+    -> the canonical V12 builder remains retained historical evidence: it consumed exact V11, re-hashed 0001->0011,
+       applied 0012 and materialized `Service.ThirdParty_V12.zip` SHA-256
+       `FBE44840BD389DC1A87D2E2E675ADD2407518D17DCEF3B2CFA69D7155EF1567C`.
+    -> the canonical V13 builder then consumed that exact V12 artifact, verified 0001->0012, applied canonical 0013,
+       reran retained/new SystemExplorer protocol/source gates including collision and non-conflicting namespace tests,
+       ran full CompletionServiceTests 24/24, built one coherent Release LanguageServer, and materialized
+       `Service.ThirdParty_V13.zip` SHA-256 `60B38E8D1A9CD6600C3F0EEF1C3A9021D047A8C8D24223EB556D2D6ED7430FA0`.
+    -> the canonical V14 builder consumed that exact V13 artifact, verified 0001->0013, applied canonical 0014, reran all
+       retained/new TestSystemExplorer protocol gates plus the explicit same-label/upstream-gate/method-overload regressions,
+       retained 0013 namespace regressions, full CompletionServiceTests 24/24 and the coherent Release LanguageServer build,
+       then materialized `Service.ThirdParty_V14.zip` SHA-256
+       `08B68D7BB68F61C727C724E4D0A1FB350DA70D979770BFDA42E2C246D1489E64`. Current runtime identity is
+       `roslyn-3aeb96c9-systemexplorer-1dd7224435bc-win-x64-v14`; pinned DLL hashes are LanguageServer
+       `D87F9BFF2026A545DFC9A3986328BA1549DFFBF02CA6FA3E14C8C75BA6F7714F`, Features
+       `8E9004B65D694B9E97C2D8DC7D810B352C3B4177CA5AAEFF99485A51C1071B80`, and LanguageServer.Protocol
+       `73682FAAE696F7EB576B310EEE1E615933886F3C7BDDDE683F430604A203B886`.
+    -> RoslynLanguageServerRuntime exposes canonical 0001 through 0014 identities in the roslyn_runtime_validated
+       diagnostic event, including completionMethodShapePatchSha256 for 0012,
+       completionContainingNamespacePatchSha256 for 0013, and
+       completionSameLabelNamedTypeCandidatesPatchSha256 for 0014.
     -> permanent 0002 attaches semantic evidence from actual grouped Roslyn symbols and SyntaxContext. Permanent
        0007 changes safe ordinary explicit value-receiver classification to use the named type of the complete
        receiver expression as semantic anchor. Permanent 0008 additionally accepts an unambiguous resolved named-type
@@ -3297,7 +3337,7 @@ Diagnostic completion/resolve pipeline timing observability (schemaVersion 5 det
        exact revalidation, item projection, candidate selection, explicit work and unattributed host duration, plus
        inner Roslyn completion RPC/normalization timing. startupReadinessWaitDurationMs is included in explicit work.
        Successful completion_request_completed additionally exposes rawItemCount -> commitSafeItemCount ->
-       textualEligibleItemCount -> publishedItemCount/returnedItemCount, prefixMatchItemCount. Under schema v5
+       textualEligibleItemCount -> publishedItemCount/returnedItemCount, prefixMatchItemCount. Under schema v6
        commitSafeItemCount means candidates safe to expose under either explicit direct-insert authority or a valid
        requiresImport + Service resolve-handle contract; it does not mean every item is directly insertable. The same
        summary includes droppedByPrefixCount, droppedByPublicationBudgetCount, textualFilterApplied, textualFallbackUsed,
@@ -3332,10 +3372,10 @@ Diagnostic completion/resolve pipeline timing observability (schemaVersion 5 det
        editCount/editNewTextUtf8Bytes, cacheHit and phase timings; they never log completionHandle, Roslyn data,
        resultId, label, sortText, namespace, newText or source text.
     -> ProtocolVersion, SemanticReadinessSchemaVersion and document synchronization wire schemas remain unchanged.
-       CompletionSchemaVersion is 5; CompletionResolveSchemaVersion is 1. Candidate selection remains a Service
+       CompletionSchemaVersion is 6; CompletionResolveSchemaVersion is 1. Candidate selection remains a Service
        publication stage after commit-contract normalization, handle registration and exact post-await revalidation.
 
-Service completion schema-v5 import resolve contract = implemented. Plugin commit ownership/application is outside this
+Service completion schema-v6 namespace metadata + existing import resolve contract = implemented. Plugin commit ownership/application is outside this
 repository's implementation authority and must be verified independently from the current System Explorer plugin source.
 
 ==================================================
@@ -3345,11 +3385,12 @@ COMPLETION SEMANTIC-ORIGIN CAPABILITY SPIKE (DIAGNOSTIC ONLY)
 Production semantic-origin promotion is implemented separately from the diagnostic assertions and is
 consumed by the newer Service candidate-selection stage:
     ProtocolVersion = 1
-    CompletionSchemaVersion = 5
+    CompletionSchemaVersion = 6
     CompletionResolveSchemaVersion = 1
     DocumentCompletionRequest retains the required Prefix contract
     DocumentCompletionItem = DisplayText / nullable InsertText / Kind / FilterText / SortText / Preselect /
-                             SemanticOrigin / InheritanceDepth / RequiresImport / CompletionHandle
+                             SemanticOrigin / InheritanceDepth / ContainingNamespace / NamespaceDisambiguation /
+                             RequiresImport / CompletionHandle
     private Roslyn production runtime emits the same verified semantic classifier evidence
 
 The spike remains diagnostic/regression evidence. It is not the production implementation source.
@@ -3508,14 +3549,33 @@ Instrumentation/CompletionSemanticOrigin/ProductionRuntime/
        CompletionServiceTests class (24/24 in the materializing V10 build), builds the coherent LanguageServer
        Release payload, and materializes Service.ThirdParty_V10.zip plus runtime evidence/adoption values. The
        authoritative V10 ThirdParty payload remains the separate verified Service.ThirdParty_V10.zip artifact.
-    -> current production additionally retains the adopted V11 reproduction kit:
+    -> now also retains the adopted V11 reproduction kit:
        Build-ProductionCompletionSourceExclusionRuntime_v1.cmd/.ps1, bundled canonical 0011, and
        README-V11-Builder-v1.txt. It consumes exact Service.ThirdParty_V10.zip, re-verifies canonical 0001 -> 0010,
        applies 0011 to the pinned upstream worktree, runs retained/private SystemExplorer protocol gates plus the new
        structural completion-source projection/cache tests, frozen/current-source/incremental-reuse regressions and the
        full CompletionServiceTests class (24/24 in the materializing V11 build), builds a coherent Release LanguageServer
-       payload, and materializes Service.ThirdParty_V11.zip plus provenance/evidence/adoption values. This is retained
-       historical V11 reproduction; the authoritative current ThirdParty payload is the separate verified
-       Service.ThirdParty_V12.zip artifact.
+       payload, and materializes Service.ThirdParty_V11.zip plus provenance/evidence/adoption values.
+    -> now also retains the adopted V12 reproduction kit:
+       Build-ProductionCompletionMethodShapeRuntime_v1.cmd/.ps1, bundled canonical 0012, and
+       README-V12-Builder-v1.txt. It consumes exact Service.ThirdParty_V11.zip, applies canonical 0001 -> 0012,
+       verifies the private method-parameter-shape wire contract and retained completion regressions, runs the full
+       CompletionServiceTests class (24/24 in the materializing V12 build), builds a coherent Release LanguageServer
+       payload, and materializes Service.ThirdParty_V12.zip plus provenance/evidence/adoption values.
+    -> also retains the adopted V13 reproduction kit:
+       Build-ProductionCompletionContainingNamespaceRuntime_v1.cmd/.ps1, bundled canonical 0013, and
+       README-V13-Builder-v1.txt. It consumes exact Service.ThirdParty_V12.zip, applies canonical 0001 -> 0013,
+       verifies general containing-namespace authority for direct/import named types including collision and
+       non-conflicting cases, runs the retained SystemExplorer protocol gates and full CompletionServiceTests class
+       (24/24 in the materializing V13 build), builds a coherent Release LanguageServer payload, and materializes
+       Service.ThirdParty_V13.zip plus provenance/evidence/adoption values.
+    -> current production additionally retains the adopted V14 reproduction kit:
+       Build-ProductionCompletionSameLabelNamedTypeCandidatesRuntime_v1.cmd/.ps1, bundled canonical 0014, and
+       README-V14-Builder-v1.txt. It consumes exact Service.ThirdParty_V13.zip, applies canonical 0001 -> 0014,
+       verifies SystemExplorer-only same-label named-type namespace splitting plus upstream gating and method-overload
+       preservation, reruns retained 0013 namespace and wider completion/workspace regressions, runs the full
+       CompletionServiceTests class (24/24 in the materializing V14 build), builds a coherent Release LanguageServer
+       payload, and materializes Service.ThirdParty_V14.zip plus provenance/evidence/adoption values. The authoritative
+       current ThirdParty payload is the separate verified Service.ThirdParty_V14.zip artifact.
     -> all retained builder files remain reproducibility/build-verification support rather than implementation source
        of truth for Roslyn and remain excluded from production C# compilation by the Spikes/**/*.cs boundary.

@@ -177,6 +177,8 @@ internal sealed class CodeServiceHost : IAsyncDisposable
                         importCompletionPathExclusionPatchSha256 = validatedRoslynRuntime.VerifiedImportCompletionPathExclusionPatchSha256,
                         completionSourceExclusionPatchSha256 = validatedRoslynRuntime.VerifiedCompletionSourceExclusionPatchSha256,
                         completionMethodShapePatchSha256 = validatedRoslynRuntime.VerifiedCompletionMethodShapePatchSha256,
+                        completionContainingNamespacePatchSha256 = validatedRoslynRuntime.VerifiedCompletionContainingNamespacePatchSha256,
+                        completionSameLabelNamedTypeCandidatesPatchSha256 = validatedRoslynRuntime.VerifiedCompletionSameLabelNamedTypeCandidatesPatchSha256,
                         provenance = "systemexplorer-private-patched-build",
                     });
             }

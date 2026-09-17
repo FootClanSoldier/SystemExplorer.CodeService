@@ -335,8 +335,10 @@ internal sealed class DocumentCompletionHost : IDisposable
                     item.Preselect,
                     item.SemanticOrigin,
                     item.InheritanceDepth,
-                    true,
-                    completionHandle);
+                    item.ContainingNamespace,
+                    NamespaceDisambiguation: null,
+                    RequiresImport: true,
+                    CompletionHandle: completionHandle);
             }
             else
             {
@@ -349,6 +351,8 @@ internal sealed class DocumentCompletionHost : IDisposable
                     item.Preselect,
                     item.SemanticOrigin,
                     item.InheritanceDepth,
+                    item.ContainingNamespace,
+                    NamespaceDisambiguation: null,
                     RequiresImport: false,
                     CompletionHandle: null);
             }
@@ -371,6 +375,7 @@ internal sealed class DocumentCompletionHost : IDisposable
 
         long candidateSelectionStarted = diagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
         CompletionCandidateSelectionResult selection = CompletionCandidateSelector.Select(projectedItems, request.Prefix);
+        IReadOnlyList<DocumentCompletionItem> publishedItems = CompletionNamespaceDisambiguator.Apply(selection.Items);
         timing?.SetCandidateSelectionDuration(candidateSelectionStarted);
         bool isIncomplete = roslynResult.IsIncomplete || handleProjectionReduced || selection.WasReduced;
 
@@ -384,7 +389,7 @@ internal sealed class DocumentCompletionHost : IDisposable
             completedSnapshot.RoslynGeneration,
             completedSnapshot.RoslynLspVersion,
             completedSnapshot.RoslynOverlayRevision,
-            selection.Items,
+            publishedItems,
             isIncomplete,
             roslynResult.RawItemCount);
 

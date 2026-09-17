@@ -19,6 +19,7 @@ internal static class DocumentCompletionLimits
     public const int MaxInsertTextUtf8Bytes = 4096;
     public const int MaxFilterTextUtf8Bytes = 2048;
     public const int MaxSortTextUtf8Bytes = 2048;
+    public const int MaxContainingNamespaceUtf8Bytes = 4096;
     public const int MaxNormalizedCompletionTextUtf8Bytes = 1024 * 1024;
     public const int MaxCompletionLine = 1_000_000;
     public const int MaxCompletionCharacter = 1_000_000;

@@ -27,5 +27,7 @@ internal sealed record DocumentCompletionResponseItem(
     [property: JsonPropertyName("preselect")] bool Preselect,
     [property: JsonPropertyName("semanticOrigin")] string SemanticOrigin,
     [property: JsonPropertyName("inheritanceDepth")] int? InheritanceDepth,
+    [property: JsonPropertyName("containingNamespace")] string? ContainingNamespace,
+    [property: JsonPropertyName("namespaceDisambiguation")] string? NamespaceDisambiguation,
     [property: JsonPropertyName("requiresImport")] bool RequiresImport,
     [property: JsonPropertyName("completionHandle")] string? CompletionHandle);

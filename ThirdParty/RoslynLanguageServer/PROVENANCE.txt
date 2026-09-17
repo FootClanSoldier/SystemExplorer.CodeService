@@ -2,10 +2,10 @@ Product:
 Microsoft.CodeAnalysis.LanguageServer
 
 Distribution identity:
-SystemExplorer patched private Roslyn Language Server win-x64 v12
+SystemExplorer patched private Roslyn Language Server win-x64 v14
 
 Stable distribution id:
-roslyn-3aeb96c9-systemexplorer-322210505af7-win-x64-v12
+roslyn-3aeb96c9-systemexplorer-1dd7224435bc-win-x64-v14
 
 Upstream repository:
 dotnet/roslyn
@@ -89,33 +89,45 @@ patches/0012-Expose-SystemExplorer-completion-method-parameter-shape.patch
 SystemExplorer completion method-parameter-shape canonical patch SHA-256:
 322210505AF78564ED4A2FF4F86099ABCBAFCAE304D35F4F417B64F3435205ED
 
+SystemExplorer completion containing-namespace canonical patch:
+patches/0013-Expose-SystemExplorer-completion-containing-namespace.patch
+
+SystemExplorer completion containing-namespace canonical patch SHA-256:
+23295A8179B4C02149ED2377A1D9D00AD623F986F7911B5551C90FFECBA85A78
+
+SystemExplorer same-label named-type completion-candidate preservation canonical patch:
+patches/0014-Preserve-SystemExplorer-same-label-named-type-completion-candidates.patch
+
+SystemExplorer same-label named-type completion-candidate preservation canonical patch SHA-256:
+1DD7224435BC59CCB616804DC990E7AF1CB438869E0CEE1C4529B82140005CF6
+
 Canonical production server archive:
-roslyn-completion-method-shape-server.zip
+roslyn-completion-same-label-named-type-candidates-server.zip
 
 Canonical production server archive SHA-256:
-4BB8D44E335CB1DDF7F12874DB7CCB9AE6EBA05CB996E501087DF5805F5B38C0
+1F6756306A4818A1A51FBDFC6A727A4544B701B5B5CA8DAE3EF5B17A5418C305
 
 Canonical production server archive size:
-44071986 bytes
+44072326 bytes
 
 Microsoft.CodeAnalysis.LanguageServer.dll SHA-256:
-18D22694B282763AEDFD18A92343D7B97C5BA3B82128C7850BAE90DB2FF84871
+D87F9BFF2026A545DFC9A3986328BA1549DFFBF02CA6FA3E14C8C75BA6F7714F
 
 Microsoft.CodeAnalysis.Features.dll SHA-256:
-D181C712F006C16F6EA63A04EFFC8FBFECD632E5A75FA6A5F16949EE4D3A0A56
+8E9004B65D694B9E97C2D8DC7D810B352C3B4177CA5AAEFF99485A51C1071B80
 
 Microsoft.CodeAnalysis.LanguageServer.Protocol.dll SHA-256:
-DEC57627912136464BDC2F8957EA12281DAF75AE0C27AB5B31E2EFCE1C9BD5F6
+73682FAAE696F7EB576B310EEE1E615933886F3C7BDDDE683F430604A203B886
 
 Redistribution license provenance:
-LICENSE.txt is preserved byte-for-byte from the verified current V11 Service.ThirdParty.zip and corresponds to pinned Roslyn repository root License.txt (Git blob a616ed188dfce68ee308f674350ad242d8588c2b).
+LICENSE.txt is preserved byte-for-byte from the verified current V13 Service.ThirdParty.zip and corresponds to pinned Roslyn repository root License.txt (Git blob a616ed188dfce68ee308f674350ad242d8588c2b).
 LICENSE.txt SHA-256:
 AE48DF11A335DC1A615F4F938B69CBA73BCF4485C4F97AF49B38EFB0F216353B
 
 ThirdParty notices provenance:
-ThirdPartyNotices.rtf is preserved byte-for-byte from the verified current V11 Service.ThirdParty.zip and corresponds to src/NuGet/ThirdPartyNotices.rtf at the pinned Roslyn commit (Git blob 1e4323dea600de34692caf3b4b844b7321b03407).
+ThirdPartyNotices.rtf is preserved byte-for-byte from the verified current V13 Service.ThirdParty.zip and corresponds to src/NuGet/ThirdPartyNotices.rtf at the pinned Roslyn commit (Git blob 1e4323dea600de34692caf3b4b844b7321b03407).
 ThirdPartyNotices.rtf SHA-256:
 EF4678850E7E3AAF9297F07E5C4060D477854E545CCF8E2EF8452D65A7B2EFAF
 
-This is a private SystemExplorer production build from the pinned Roslyn source commit plus canonical 0001, canonical 0002, canonical 0003, canonical 0004, canonical 0005, canonical 0006, canonical 0007, canonical 0008, canonical 0009, canonical 0010, canonical 0011, and canonical 0012.
+This is a private SystemExplorer production build from the pinned Roslyn source commit plus canonical 0001, canonical 0002, canonical 0003, canonical 0004, canonical 0005, canonical 0006, canonical 0007, canonical 0008, canonical 0009, canonical 0010, canonical 0011, canonical 0012, canonical 0013, and canonical 0014.
 It is not the unmodified official roslyn-language-server 5.12.0-1.26426.8 package runtime.

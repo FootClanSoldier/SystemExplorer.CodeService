@@ -1064,8 +1064,8 @@ Only the semantic-origin scenario uses
 `RoslynLspClientCapabilityProfile.ProductionCompletionWire`, which mirrors the current production
 completion-relevant VS-extension wire. Existing scenarios continue to use `ProbeBaseline` exactly as
 before. The temporary semantic classifier and its fail-closed rules remain diagnostic evidence only;
-production now carries the verified receiver-relative/type-receiver/qualified-name-recovery classifier semantics through the separate private Roslyn v9
-runtime and Service `CompletionSchemaVersion = 5`. The probe still does not own or compile into that
+production now carries the verified receiver-relative/type-receiver/qualified-name-recovery classifier semantics through the separate private Roslyn v14
+runtime and Service `CompletionSchemaVersion = 6`. The probe still does not own or compile into that
 production implementation.
 
 ### Normal one-command semantic-origin verification

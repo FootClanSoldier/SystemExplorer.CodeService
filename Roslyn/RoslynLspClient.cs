@@ -15,6 +15,7 @@ internal sealed class RoslynLspClient : IAsyncDisposable
     private const string SystemExplorerCompletionInheritanceDepthPropertyName = "_systemExplorer_completionInheritanceDepth";
     private const string SystemExplorerCompletionRequiresImportPropertyName = "_systemExplorer_completionRequiresImport";
     private const string SystemExplorerCompletionMethodHasParametersPropertyName = "_systemExplorer_completionMethodHasParameters";
+    private const string SystemExplorerCompletionContainingNamespacePropertyName = "_systemExplorer_completionContainingNamespace";
     private const int MaxImportCompletionExcludedPathPrefixLength = 4096;
 
     private readonly RoslynLanguageServerProcess _process;
@@ -548,6 +549,14 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                 return RoslynCompletionClientResult.Malformed(rawItemCount);
             }
 
+            if (!TryNormalizeCompletionContainingNamespaceMetadata(
+                    item,
+                    out string? containingNamespace,
+                    out int containingNamespaceUtf8Bytes))
+            {
+                return RoslynCompletionClientResult.Malformed(rawItemCount);
+            }
+
             string filterText = label;
             if (item.TryGetProperty("filterText", out JsonElement filterTextElement)
                 && filterTextElement.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
@@ -698,7 +707,7 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                     continue;
                 }
 
-                int itemTextBytes = checked(labelBytes + filterTextBytes + sortTextBytes);
+                int itemTextBytes = checked(labelBytes + filterTextBytes + sortTextBytes + containingNamespaceUtf8Bytes);
                 if (normalizedTextUtf8Bytes > DocumentCompletionLimits.MaxNormalizedCompletionTextUtf8Bytes - itemTextBytes)
                 {
                     isIncomplete = true;
@@ -734,6 +743,7 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                     preselect,
                     semanticOrigin,
                     inheritanceDepth,
+                    containingNamespace,
                     resolvePayload));
                 normalizedTextUtf8Bytes += itemTextBytes;
                 resolvePayloadUtf8Bytes += serializedItem.Length;
@@ -794,7 +804,7 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                 continue;
             }
 
-            int ordinaryItemTextBytes = checked(ordinaryDisplayTextBytes + insertTextBytes + ordinaryFilterTextBytes + ordinarySortTextBytes);
+            int ordinaryItemTextBytes = checked(ordinaryDisplayTextBytes + insertTextBytes + ordinaryFilterTextBytes + ordinarySortTextBytes + containingNamespaceUtf8Bytes);
             if (normalizedTextUtf8Bytes > DocumentCompletionLimits.MaxNormalizedCompletionTextUtf8Bytes - ordinaryItemTextBytes)
             {
                 isIncomplete = true;
@@ -809,7 +819,8 @@ internal sealed class RoslynLspClient : IAsyncDisposable
                 sortText,
                 preselect,
                 semanticOrigin,
-                inheritanceDepth));
+                inheritanceDepth,
+                containingNamespace));
             normalizedTextUtf8Bytes += ordinaryItemTextBytes;
         }
 
@@ -1114,6 +1125,35 @@ internal sealed class RoslynLspClient : IAsyncDisposable
         }
 
         methodHasParameters = methodHasParametersElement.GetBoolean();
+        return true;
+    }
+
+    private static bool TryNormalizeCompletionContainingNamespaceMetadata(
+        JsonElement item,
+        out string? containingNamespace,
+        out int containingNamespaceUtf8Bytes)
+    {
+        containingNamespace = null;
+        containingNamespaceUtf8Bytes = 0;
+
+        if (!item.TryGetProperty(SystemExplorerCompletionContainingNamespacePropertyName, out JsonElement containingNamespaceElement)
+            || containingNamespaceElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return true;
+        }
+
+        if (containingNamespaceElement.ValueKind != JsonValueKind.String
+            || containingNamespaceElement.GetString() is not string parsedContainingNamespace
+            || string.IsNullOrEmpty(parsedContainingNamespace)
+            || !TryGetBoundedUtf8ByteCount(
+                parsedContainingNamespace,
+                DocumentCompletionLimits.MaxContainingNamespaceUtf8Bytes,
+                out containingNamespaceUtf8Bytes))
+        {
+            return false;
+        }
+
+        containingNamespace = parsedContainingNamespace;
         return true;
     }
 
@@ -1516,6 +1556,7 @@ internal sealed record RoslynCompletionItem(
     bool Preselect,
     CompletionSemanticOrigin SemanticOrigin,
     int? InheritanceDepth,
+    string? ContainingNamespace,
     bool RequiresImport,
     RoslynCompletionResolvePayload? ResolvePayload)
 {
@@ -1532,7 +1573,8 @@ internal sealed record RoslynCompletionItem(
         string sortText,
         bool preselect,
         CompletionSemanticOrigin semanticOrigin,
-        int? inheritanceDepth)
+        int? inheritanceDepth,
+        string? containingNamespace)
         => new(
             displayText,
             insertText,
@@ -1542,6 +1584,7 @@ internal sealed record RoslynCompletionItem(
             preselect,
             semanticOrigin,
             inheritanceDepth,
+            containingNamespace,
             RequiresImport: false,
             ResolvePayload: null);
 
@@ -1553,6 +1596,7 @@ internal sealed record RoslynCompletionItem(
         bool preselect,
         CompletionSemanticOrigin semanticOrigin,
         int? inheritanceDepth,
+        string? containingNamespace,
         RoslynCompletionResolvePayload resolvePayload)
         => new(
             displayText,
@@ -1563,6 +1607,7 @@ internal sealed record RoslynCompletionItem(
             preselect,
             semanticOrigin,
             inheritanceDepth,
+            containingNamespace,
             true,
             resolvePayload);
 }
